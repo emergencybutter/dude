@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="database" path="curbside.db" />
+        <include domain="file" path="datastore/curbside.preferences_pb" />
+        <exclude domain="sharedpref" path="household_key.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="database" path="curbside.db" />
+        <include domain="file" path="datastore/curbside.preferences_pb" />
+        <exclude domain="sharedpref" path="household_key.xml" />
+    </device-transfer>
+</data-extraction-rules>

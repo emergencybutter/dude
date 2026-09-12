@@ -1,0 +1,68 @@
+rules_version = '2';
+
+// Access rules for household sharing.
+//
+// The threat model is narrow but real: the documents here are encrypted, so a breach of Firestore
+// leaks timestamps and user ids rather than locations. These rules exist to stop the other failure
+// modes — someone enumerating households, adding themselves to one, or reading a couple's parking
+// history because they guessed a document id.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isMember(householdId) {
+      return signedIn() &&
+        get(/databases/$(database)/documents/households/$(householdId)).data.members
+          .keys().hasAny([request.auth.uid]);
+    }
+
+    match /households/{householdId} {
+      // Only members can see who else is in the household.
+      allow read: if isMember(householdId);
+
+      // Anyone signed in may create a household, but only with themselves as the sole member.
+      allow create: if signedIn() &&
+        request.resource.data.members.keys().hasOnly([request.auth.uid]);
+
+      // A member may edit the household. A non-member may add themselves and nobody else, which is
+      // what the invite flow does after it has verified an unexpired invite.
+      allow update: if isMember(householdId) ||
+        (signedIn() &&
+         request.resource.data.members.keys().hasAll(resource.data.members.keys()) &&
+         request.resource.data.members.keys().removeAll(resource.data.members.keys())
+           .hasOnly([request.auth.uid]));
+
+      allow delete: if false;
+
+      match /parkings/{eventId} {
+        allow read: if isMember(householdId);
+
+        // A member may only write records attributed to themselves, so one partner cannot forge a
+        // parking spot in the other's name.
+        allow create, update: if isMember(householdId) &&
+          request.resource.data.from == request.auth.uid &&
+          request.resource.data.envelope.keys().hasAll(['nonce', 'ciphertext', 'version']);
+
+        allow delete: if isMember(householdId) && resource.data.from == request.auth.uid;
+      }
+
+      match /tokens/{token} {
+        allow read, write: if isMember(householdId);
+      }
+    }
+
+    // Invites are readable by anyone holding the code — the code is the secret, and it is only ever
+    // transmitted inside a QR that also carries the encryption key. They are single use and the
+    // client deletes them on redemption; a scheduled function sweeps up expired ones.
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn() && request.resource.data.createdBy == request.auth.uid;
+      allow delete: if signedIn();
+      allow update: if false;
+    }
+  }
+}

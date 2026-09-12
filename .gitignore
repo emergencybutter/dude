@@ -1,0 +1,17 @@
+# Build output
+build/
+.gradle/
+dist/
+
+# Secrets and per-machine config
+local.properties
+app/google-services.json
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc

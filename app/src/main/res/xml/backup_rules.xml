@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Parking history is worth restoring to a new phone. -->
+    <include domain="database" path="curbside.db" />
+    <include domain="file" path="datastore/curbside.preferences_pb" />
+    <!--
+      The household key is not. It is wrapped by a hardware key that does not leave the old device,
+      so a restored copy would be undecryptable; pairing again takes one QR scan.
+    -->
+    <exclude domain="sharedpref" path="household_key.xml" />
+</full-backup-content>

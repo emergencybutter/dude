@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Curbside</string>
+    <string name="your_car">Your car</string>
+
+    <string name="channel_parked">Parking spot recorded</string>
+    <string name="channel_move">Move your car</string>
+    <string name="channel_shared">Shared by your household</string>
+    <string name="channel_capture">Finding your car</string>
+
+    <string name="notification_capturing">Working out where you parked…</string>
+    <string name="notification_parked_title">Parking spot saved</string>
+    <string name="notification_parked_fallback">Location saved</string>
+    <string name="notification_move_by">Move by %1$s</string>
+    <string name="notification_confirm_side">Tap to confirm which side of the street you parked on</string>
+    <string name="notification_no_rules">No sign data for this curb — check the signs</string>
+
+    <string name="notification_move_title">Move your car in %1$d minutes</string>
+    <string name="notification_move_text">%1$s — street cleaning starts at %2$s</string>
+    <string name="action_walk_to_car">Walk to car</string>
+
+    <string name="notification_partner_parked">%1$s parked</string>
+
+    <string name="notification_failed_title">Could not find your car</string>
+    <string name="notification_failed_text">No usable location at the end of that drive. Open Curbside to drop a pin.</string>
+
+    <string name="share_subject">Where the car is</string>
+    <string name="share_title">Share parking spot</string>
+    <string name="share_text">The car is here.\n%1$s%2$s</string>
+</resources>

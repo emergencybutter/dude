@@ -1,0 +1,95 @@
+# Curbside
+
+An Android app that remembers where you parked, warns you before alternate side cleaning takes the
+spot, shares the location with your partner, and shows New York's street cleaning rules on a map.
+
+Three things shape the design:
+
+- **It costs nothing when you are not driving.** No continuous location subscription, no foreground
+  service, no polling. Detection rides on the phone's motion coprocessor, your car stereo's Bluetooth
+  link, and Android Auto's projection state. The GPS turns on once per drive, for a few seconds.
+- **It never guesses in your favour.** A sign it cannot read is reported as unknown, not as "you're
+  fine". A GPS fix too rough to tell which side of the street you are on asks you rather than
+  picking, because the two sides are cleaned on different days.
+- **The server cannot read where your car is.** Household sharing is end-to-end encrypted with a key
+  that travels between phones as a QR code and nowhere else.
+
+Read [`DESIGN.md`](DESIGN.md) for the architecture and the reasoning. Subsystem detail is in
+[`docs/`](docs/).
+
+## Status
+
+**Design and implementation, unbuilt.** The two pure-Kotlin modules are written and tested; the
+Android module is written but has never been compiled, because the environment this was built in has
+no Android SDK. Expect to fix import and API-surface details on the first real build. Nothing here
+has run on a phone.
+
+| Part | State |
+| --- | --- |
+| `:asp-core` — sign parsing, schedule engine, geometry, curb matching | Written, **49 tests passing** |
+| `:drive-core` — drive/park state machine | Written, **16 tests passing** |
+| `tools/asp_pipeline.py` — offline data pipeline | Written, **24 tests passing** |
+| `:app` — detection, storage, map, UI, sharing | Written, **not compiled** |
+| Library versions in `gradle/libs.versions.toml` | Plausible but unverified; Google's Maven was unreachable. Refresh before the first build |
+
+## Layout
+
+```
+asp-core/     Pure JVM. Sign parsing, the weekly schedule engine, geometry, curb matching.
+drive-core/   Pure JVM. The state machine that decides a drive has ended.
+app/          Android. Detection wiring, Room storage, MapLibre map, Compose UI, sharing.
+tools/        Python. The offline pipeline that builds the curb dataset from NYC open data.
+docs/         Subsystem design notes.
+firestore.rules
+```
+
+The two pure modules exist so the logic most likely to be wrong is testable in milliseconds without
+an emulator. That is where 65 of the 89 tests live.
+
+## Building
+
+Requires the Android SDK (compileSdk 35) and JDK 17.
+
+```bash
+./gradlew :asp-core:test :drive-core:test    # the logic, no SDK needed
+./gradlew :app:assembleDebug
+python3 tools/test_asp_pipeline.py
+```
+
+### Configuration
+
+Secrets stay out of the repository. Put them in `local.properties` (gitignored) or supply them as
+environment variables in CI. All three are optional — missing keys degrade a feature rather than
+failing the build, so a fresh clone compiles and runs.
+
+| Key | What it does if missing |
+| --- | --- |
+| `MAP_STYLE_URL` | A MapLibre style URL for the basemap. Blank means a blank basemap; the curb overlay still draws |
+| `NYC_311_API_KEY` | Free from the [NYC API portal](https://api-portal.nyc.gov/). Blank means no suspension calendar, so holidays are treated as ordinary days |
+| `ASP_DATASET_BASE_URL` | Where `manifest.json` and the segment bundle are hosted. Blank means no curb data, so the map is empty and parking spots get no schedule |
+
+Sharing additionally needs a Firebase project and `app/google-services.json`. Deploy
+`firestore.rules` alongside it; the default rules will not do.
+
+### Building the curb dataset
+
+```bash
+python3 tools/asp_pipeline.py --out dist --borough Brooklyn --report-unparsed
+```
+
+Publish `dist/` at whatever `ASP_DATASET_BASE_URL` points at. `--report-unparsed` lists the sign copy
+the parser could not read, which is the work queue for improving it. See
+[`docs/asp-data.md`](docs/asp-data.md).
+
+## Permissions, and why
+
+| Permission | Used for |
+| --- | --- |
+| `ACCESS_FINE_LOCATION` | The one fix taken per drive, and the passive breadcrumb |
+| `ACCESS_BACKGROUND_LOCATION` | The fix happens after you have walked away from your phone's screen. Requested separately, after the app has demonstrably worked, because asking cold gets it denied |
+| `ACTIVITY_RECOGNITION` | Vehicle and walking transitions — the signal that works with the app killed |
+| `BLUETOOTH_CONNECT` | Recognising your car stereo specifically, so headphones are not mistaken for a car |
+| `POST_NOTIFICATIONS` | The reminder before cleaning starts |
+| `SCHEDULE_EXACT_ALARM` | The reminder lands on time. Degrades to a ten-minute-early window when not granted |
+
+No permission is requested at launch. Each is asked for at the point it first matters.

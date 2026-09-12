@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+      Location. Foreground permissions are requested at the first parking capture; background
+      location is requested separately and only once the user has seen the app work, because
+      Android shows it as a scary "all the time" dialog and asking cold gets it denied.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <!-- Activity transitions (IN_VEHICLE / ON_FOOT). Runs on the sensor hub, not the CPU. -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+
+    <!-- Car stereo connect/disconnect as an ignition proxy. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!--
+      The parking fix runs as expedited WorkManager work, which promotes itself to a location-typed
+      foreground service on API 31+.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+    <!--
+      "Move your car in 30 minutes" is time-critical, but not alarm-clock critical, so this is the
+      user-grantable permission rather than USE_EXACT_ALARM. MoveReminderScheduler falls back to an
+      inexact window when it is not granted.
+    -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <uses-feature
+        android:name="android.hardware.location.gps"
+        android:required="false" />
+
+    <application
+        android:name=".CurbsideApplication"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Curbside">
+
+        <activity
+            android:name=".ui.CurbsideActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.Curbside">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          Target of the activity-transition PendingIntent. Not exported: only Play Services holds
+          the PendingIntent, and a PendingIntent delivers to an unexported component fine.
+        -->
+        <receiver
+            android:name=".detect.ActivityTransitionReceiver"
+            android:exported="false" />
+
+        <!--
+          ACL_CONNECTED / ACL_DISCONNECTED are on the implicit-broadcast exemption list, so a
+          manifest receiver still wakes a killed process. System-delivered broadcasts need
+          exported="true" from API 31.
+        -->
+        <receiver
+            android:name=".detect.CarBluetoothReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
+                <action android:name="android.bluetooth.device.action.ACL_DISCONNECTED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Fires the park-confirmation debounce. -->
+        <receiver
+            android:name=".detect.ParkCheckAlarmReceiver"
+            android:exported="false" />
+
+        <!-- Receives passive location fixes during a drive. Costs nothing when nothing is driving. -->
+        <receiver
+            android:name=".location.BreadcrumbReceiver"
+            android:exported="false" />
+
+        <!-- Fires the "move your car" reminder. -->
+        <receiver
+            android:name=".notify.MoveReminderReceiver"
+            android:exported="false" />
+
+        <!-- Alarms and transition registrations do not survive a reboot; re-arm them. -->
+        <receiver
+            android:name=".detect.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".share.CurbsideMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Expedited work that takes a GPS fix needs the location foreground-service type. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="location"
+            tools:node="merge" />
+
+        <!-- Hilt supplies the WorkManager configuration, so the default initializer is removed. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+    </application>
+</manifest>
