@@ -31,6 +31,12 @@ data class CurbEvaluation(
     val next: RestrictionWindow?,
     /** True when a street-cleaning window was cancelled today by a citywide suspension. */
     val suspendedToday: Boolean,
+    /**
+     * True when some stretch of this curb is restricted around the clock but the rest of it is
+     * not — a bus stop, a hydrant, a driveway. The status describes the rest of the block; this
+     * says the block is not uniform and the sign on the spot is the authority.
+     */
+    val partiallyRestricted: Boolean = false,
 ) {
     /** The moment the car has to be gone by. Null when nothing is scheduled within the horizon. */
     val moveBy: ZonedDateTime? get() = next?.start
@@ -72,13 +78,20 @@ object SweepSchedule {
             return CurbEvaluation(CurbStatus.UNKNOWN, null, null, suspendedToday = false)
         }
 
-        val enforceable = regulations.filterNot { it.isAdvisory }
-        if (enforceable.isEmpty()) {
-            return CurbEvaluation(CurbStatus.CLEAR, null, null, suspendedToday = false)
+        val rules = classify(regulations)
+        if (rules.condemned) {
+            return CurbEvaluation(CurbStatus.ALWAYS_RESTRICTED, null, null, suspendedToday = false)
         }
 
-        if (enforceable.any(::isAroundTheClock)) {
-            return CurbEvaluation(CurbStatus.ALWAYS_RESTRICTED, null, null, suspendedToday = false)
+        val enforceable = rules.governing
+        if (enforceable.isEmpty()) {
+            return CurbEvaluation(
+                CurbStatus.CLEAR,
+                null,
+                null,
+                suspendedToday = false,
+                partiallyRestricted = rules.partiallyRestricted,
+            )
         }
 
         val local = now.withZoneSameInstant(NYC)
@@ -102,8 +115,51 @@ object SweepSchedule {
             }
         }
 
-        return CurbEvaluation(status, current, next, suspendedToday)
+        return CurbEvaluation(status, current, next, suspendedToday, rules.partiallyRestricted)
     }
+
+    /**
+     * Decides what an "anytime" sign on a curb actually condemns.
+     *
+     * The city's sign data is per sign, but a curb here is a whole block-side, so every sign posted
+     * anywhere along the block arrives in one undifferentiated list. A "NO STANDING ANYTIME" sign
+     * is nearly always a bus stop, a hydrant or a driveway governing the few metres it stands on —
+     * and taken at face value it condemned the whole block, on half the curbs in the dataset.
+     *
+     * What settles it is the company the sign keeps. A block posted with alternate side cleaning,
+     * or a meter, is a block where parking is expected somewhere: nobody sweeps a curb, or bills
+     * for it, that may never be stood on. So an anytime rule alongside timed ones governs part of
+     * the block; an anytime rule alone, with nothing to contradict it, governs all of it.
+     *
+     * Note what this deliberately does not do: it never discards the anytime rule as noise. The
+     * curb is reported as partly restricted, and the sheet says so, because the alternative is
+     * telling a driver a bus stop is a parking spot.
+     */
+    internal fun classify(regulations: List<Regulation>): CurbRules {
+        val enforceable = regulations.filterNot { it.isAdvisory }
+        val governing = enforceable.filterNot(::isAroundTheClock)
+        if (governing.size == enforceable.size) {
+            return CurbRules(governing, condemned = false, partiallyRestricted = false)
+        }
+
+        // Any rule that names hours is a rule that expects a car to be there at other hours.
+        val contradicted = regulations.any { it.window != null }
+        return if (contradicted) {
+            CurbRules(governing, condemned = false, partiallyRestricted = true)
+        } else {
+            CurbRules(emptyList(), condemned = true, partiallyRestricted = false)
+        }
+    }
+
+    /** The rules that decide a curb's status, and what the anytime signs on it amount to. */
+    internal data class CurbRules(
+        /** Enforceable rules with a scope narrower than the whole week; these get expanded. */
+        val governing: List<Regulation>,
+        /** The whole curb is restricted around the clock. */
+        val condemned: Boolean,
+        /** Some stretch of it is, and the rest follows [governing]. */
+        val partiallyRestricted: Boolean,
+    )
 
     /** Convenience for the map layer, which evaluates a whole viewport of segments at once. */
     fun evaluate(

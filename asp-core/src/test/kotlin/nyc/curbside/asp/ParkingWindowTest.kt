@@ -171,6 +171,89 @@ class ParkingWindowTest {
         assertNull(result.duration(nyc("2026-09-14", "10:00")))
     }
 
+    /**
+     * The Union St bug: one bus-stop sign on a block that is otherwise ordinary alternate-side
+     * parking condemned the whole block. Half the curbs in the city's data carry one of these.
+     */
+    @Test
+    fun `an anytime sign beside a cleaning schedule restricts part of the block, not all of it`() {
+        val busStop = Regulation(
+            kind = RegulationKind.NO_STANDING,
+            days = DayOfWeek.entries.toSet(),
+            window = null,
+            raw = "NO STANDING ANYTIME",
+            daysInferred = true,
+        )
+
+        val allowance = ParkingWindow.allowance(
+            listOf(busStop, monThuSweeping),
+            nyc("2026-09-13", "14:00"),
+            noSuspensions,
+        )
+
+        // Not Never: the block is swept on Mondays and Thursdays, which only makes sense if cars
+        // are expected to be on it the rest of the week.
+        val result = free(allowance)
+        assertTrue(result.isImmediate)
+        assertEquals(nyc("2026-09-14", "08:00"), result.until)
+
+        val evaluation = SweepSchedule.evaluate(
+            listOf(busStop, monThuSweeping),
+            nyc("2026-09-13", "14:00"),
+            noSuspensions,
+        )
+        assertTrue(evaluation.partiallyRestricted, "the bus stop still has to be reported")
+        // 18 hours to Monday's sweeping: graded on the cleaning schedule, as any ordinary curb is.
+        assertEquals(CurbStatus.MOVE_IN_TWO_DAYS, evaluation.status)
+    }
+
+    @Test
+    fun `an anytime sign with nothing to contradict it still condemns the curb`() {
+        val noStanding = Regulation(
+            kind = RegulationKind.NO_STANDING,
+            days = DayOfWeek.entries.toSet(),
+            window = null,
+            raw = "NO STANDING ANYTIME",
+            daysInferred = true,
+        )
+
+        assertEquals(
+            ParkingAllowance.Never,
+            ParkingWindow.allowance(listOf(noStanding), nyc("2026-09-13", "14:00"), noSuspensions),
+        )
+        assertEquals(
+            CurbStatus.ALWAYS_RESTRICTED,
+            SweepSchedule.evaluate(listOf(noStanding), nyc("2026-09-13", "14:00"), noSuspensions).status,
+        )
+    }
+
+    @Test
+    fun `a meter is enough to contradict an anytime sign`() {
+        val busStop = Regulation(
+            kind = RegulationKind.NO_STANDING,
+            days = DayOfWeek.entries.toSet(),
+            window = null,
+            raw = "NO STANDING ANYTIME",
+            daysInferred = true,
+        )
+        val metered = Regulation(
+            kind = RegulationKind.TIME_LIMITED,
+            days = setOf(DayOfWeek.MONDAY),
+            window = TimeWindow(LocalTime.of(9, 0), LocalTime.of(19, 0)),
+            raw = "2 HOUR METERED PARKING 9AM-7PM MON",
+        )
+
+        val evaluation = SweepSchedule.evaluate(
+            listOf(busStop, metered),
+            nyc("2026-09-14", "10:00"),
+            noSuspensions,
+        )
+
+        // Nobody bills for a curb that may never be stood on.
+        assertEquals(CurbStatus.CLEAR, evaluation.status)
+        assertTrue(evaluation.partiallyRestricted)
+    }
+
     @Test
     fun `a curb whose only rule is unparsed stays unknown`() {
         val unparsed = Regulation(

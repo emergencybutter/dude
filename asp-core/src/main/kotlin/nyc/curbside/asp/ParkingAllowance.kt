@@ -66,15 +66,16 @@ object ParkingWindow {
 
         // Advisory rules — meters, time limits — cap how long you may stay but never make the curb
         // illegal, and the app does not model their durations. They are listed on the detail sheet
-        // as rules; they do not shorten the span computed here.
-        val enforceable = regulations.filterNot { it.isAdvisory }
-        if (enforceable.isEmpty()) return ParkingAllowance.Free(from = null, until = null)
-
-        if (enforceable.any(SweepSchedule::isAroundTheClock)) return ParkingAllowance.Never
+        // as rules; they do not shorten the span computed here. An anytime sign that governs only
+        // part of the block is set aside the same way, and reported by
+        // [CurbEvaluation.partiallyRestricted] rather than folded into the span.
+        val rules = SweepSchedule.classify(regulations)
+        if (rules.condemned) return ParkingAllowance.Never
+        if (rules.governing.isEmpty()) return ParkingAllowance.Free(from = null, until = null)
 
         val local = now.withZoneSameInstant(NYC)
         val spans = merge(
-            SweepSchedule.expand(enforceable, local.toLocalDate(), horizonDays, calendar),
+            SweepSchedule.expand(rules.governing, local.toLocalDate(), horizonDays, calendar),
         )
 
         val open = spans.firstOrNull { local >= it.start && local < it.end }

@@ -114,6 +114,15 @@ private fun CarCard(
                 color = MaterialTheme.colorScheme.outline,
             )
 
+            if (state.evaluation?.partiallyRestricted == true) {
+                Text(
+                    "Part of this block is no standing at any time. Curbside cannot tell which " +
+                        "stretch — check the sign next to the car.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
             if (state.needsSideConfirmation) {
                 HorizontalDivider()
                 Text(

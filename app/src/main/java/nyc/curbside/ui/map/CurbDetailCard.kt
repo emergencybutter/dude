@@ -97,6 +97,16 @@ fun CurbDetailCard(detail: CurbDetail, onDismiss: () -> Unit) {
                 Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.outline)
             }
 
+            if (detail.curb.evaluation.partiallyRestricted) {
+                Text(
+                    "Somewhere on this block a sign says no standing at any time — a bus stop, a " +
+                        "hydrant or a driveway. Curbside cannot tell which stretch, so read the " +
+                        "sign where you stop.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
             HorizontalDivider()
 
             Text(
