@@ -144,6 +144,62 @@ object Geo {
         return best
     }
 
+    /** Total length of a polyline. */
+    fun lengthMeters(line: List<LatLng>): Double {
+        var total = 0.0
+        for (i in 0 until line.size - 1) total += haversineMeters(line[i], line[i + 1])
+        return total
+    }
+
+    /** How far along [line] a projection falls, measured from the line's first vertex. */
+    fun alongMeters(line: List<LatLng>, projection: Projection): Double {
+        var total = 0.0
+        for (i in 0 until projection.segmentIndex) total += haversineMeters(line[i], line[i + 1])
+        val span = line.getOrNull(projection.segmentIndex + 1) ?: return total
+        return total + haversineMeters(line[projection.segmentIndex], span) * projection.t
+    }
+
+    /** Where [point] falls along [line], or null when the line is degenerate. */
+    fun alongMeters(line: List<LatLng>, point: LatLng): Double? =
+        project(point, line)?.let { alongMeters(line, it) }
+
+    /**
+     * The piece of [line] between two distances along it.
+     *
+     * Used to draw one stretch of a curb in its own colour, so a hydrant zone is a short red run
+     * rather than a red block. Returns at least two points whenever the span has any length.
+     */
+    fun slice(line: List<LatLng>, fromMeters: Double, toMeters: Double): List<LatLng> {
+        if (line.size < 2) return line
+        val start = minOf(fromMeters, toMeters)
+        val end = maxOf(fromMeters, toMeters)
+
+        val out = ArrayList<LatLng>()
+        var travelled = 0.0
+        for (i in 0 until line.size - 1) {
+            val a = line[i]
+            val b = line[i + 1]
+            val span = haversineMeters(a, b)
+            if (span <= 0.0) continue
+            val spanStart = travelled
+            val spanEnd = travelled + span
+            travelled = spanEnd
+
+            if (spanEnd < start || spanStart > end) continue
+
+            val enter = ((start - spanStart) / span).coerceIn(0.0, 1.0)
+            val exit = ((end - spanStart) / span).coerceIn(0.0, 1.0)
+            val head = interpolate(a, b, enter)
+            val tail = interpolate(a, b, exit)
+            if (out.isEmpty() || out.last() != head) out += head
+            if (out.last() != tail) out += tail
+        }
+        return out
+    }
+
+    private fun interpolate(a: LatLng, b: LatLng, t: Double): LatLng =
+        LatLng(a.lat + (b.lat - a.lat) * t, a.lon + (b.lon - a.lon) * t)
+
     private fun fromLocalMeters(origin: LatLng, east: Double, north: Double): LatLng {
         val lat = origin.lat + north / METERS_PER_DEGREE_LAT
         val lon = origin.lon + east / (METERS_PER_DEGREE_LAT * cos(Math.toRadians(origin.lat)))

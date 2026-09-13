@@ -10,6 +10,7 @@ import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 import nyc.curbside.asp.CurbStatus
+import nyc.curbside.asp.CurbStretch
 import nyc.curbside.asp.EvaluatedCurb
 import nyc.curbside.asp.StrokePattern
 
@@ -69,16 +70,24 @@ object AspMapLayer {
         curbs: List<EvaluatedCurb>,
         selectedId: String? = null,
     ): FeatureCollection = FeatureCollection.fromFeatures(
-        curbs.mapNotNull { evaluated ->
-            val points = evaluated.curb.geometry.map { Point.fromLngLat(it.lon, it.lat) }
-            if (points.size < 2) return@mapNotNull null
+        curbs.flatMap { evaluated ->
+            // One feature per run of curb with a single answer, not one per block: a bus stop at
+            // the corner is a short red line, and the rest of the block keeps its own colour.
+            val runs = evaluated.stretches.ifEmpty {
+                listOf(CurbStretch(evaluated.curb.geometry, 0.0, 0.0, evaluated.evaluation))
+            }
 
-            Feature.fromGeometry(LineString.fromLngLats(points)).apply {
-                addStringProperty(PROPERTY_STATUS, evaluated.evaluation.status.name)
-                addNumberProperty(PROPERTY_OFFSET_SIGN, evaluated.curb.sideSign)
-                addStringProperty(PROPERTY_SEGMENT_ID, evaluated.curb.segment.id)
-                addStringProperty(PROPERTY_LABEL, label(evaluated))
-                addBooleanProperty(PROPERTY_SELECTED, evaluated.curb.segment.id == selectedId)
+            runs.mapNotNull { stretch ->
+                val points = stretch.geometry.map { Point.fromLngLat(it.lon, it.lat) }
+                if (points.size < 2) return@mapNotNull null
+
+                Feature.fromGeometry(LineString.fromLngLats(points)).apply {
+                    addStringProperty(PROPERTY_STATUS, stretch.evaluation.status.name)
+                    addNumberProperty(PROPERTY_OFFSET_SIGN, evaluated.curb.sideSign)
+                    addStringProperty(PROPERTY_SEGMENT_ID, evaluated.curb.segment.id)
+                    addStringProperty(PROPERTY_LABEL, label(evaluated))
+                    addBooleanProperty(PROPERTY_SELECTED, evaluated.curb.segment.id == selectedId)
+                }
             }
         },
     )

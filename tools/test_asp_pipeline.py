@@ -16,7 +16,13 @@ from asp_pipeline import (
     ALL_DAYS,
     END_OF_DAY,
     Regulation,
+    SignRecord,
     bbox,
+    block_orientation,
+    extents_for_block,
+    parse_arrow,
+    polyline_length_m,
+    project_onto_polyline,
     distance_to_polyline,
     encode_polyline,
     nearest_segment,
@@ -282,6 +288,142 @@ def decode(encoded: str, precision: int = 6) -> list[tuple[float, float]]:
         lon += value()
         out.append((lat / factor, lon / factor))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Sign extents
+# ---------------------------------------------------------------------------
+
+#: Union St's south side, Van Brunt to Columbia: a straight run east, about 175m long.
+BLOCK_START = (40.6800, -74.0100)
+BLOCK_LENGTH_M = 175.0
+_LON_PER_M = 1.0 / (111_320.0 * 0.7585)
+UNION_ST_SOUTH = [BLOCK_START, (40.6800, -74.0100 + BLOCK_LENGTH_M * _LON_PER_M)]
+
+FEET_PER_M = 3.28084
+
+
+def sign_at(feet: float, description: str, geometry=UNION_ST_SOUTH) -> SignRecord:
+    """A sign standing the given distance along the block, as the city measures it."""
+    fraction = (feet / FEET_PER_M) / BLOCK_LENGTH_M
+    lon = geometry[0][1] + (geometry[-1][1] - geometry[0][1]) * fraction
+    return SignRecord(
+        position=(geometry[0][0], lon),
+        feet=feet,
+        arrow=parse_arrow(description),
+        regulations=tuple(parse_sign(description)),
+    )
+
+
+CLEANING = "NO PARKING (SANITATION BROOM SYMBOL) FRIDAY 8:30AM-10AM"
+ANYTIME = "NO STANDING ANYTIME"
+TRUCKS = "TRUCK (SYMBOL) TRUCK LOADING ONLY MONDAY-FRIDAY 7AM-7PM"
+
+
+class ArrowTest(unittest.TestCase):
+    def test_both_ways(self):
+        self.assertEqual("both", parse_arrow("NO STANDING ANYTIME <->"))
+        self.assertEqual("both", parse_arrow("2 HMP 8AM-7PM EXCEPT SUNDAY <-->"))
+
+    def test_forward(self):
+        self.assertEqual("forward", parse_arrow("NO STANDING ANYTIME --> (SUPERSEDES SP-10BA)"))
+        self.assertEqual("forward", parse_arrow("2 HMP 9AM-7PM EXCEPT SUNDAY ->"))
+
+    def test_back(self):
+        self.assertEqual("back", parse_arrow("NO STANDING ANYTIME <--"))
+
+    def test_no_arrow(self):
+        self.assertIsNone(parse_arrow("PAY-BY-CELL LOCATOR NUMBER"))
+
+
+class ProjectionTest(unittest.TestCase):
+    def test_length_of_the_test_block(self):
+        self.assertAlmostEqual(BLOCK_LENGTH_M, polyline_length_m(UNION_ST_SOUTH), delta=1.0)
+
+    def test_a_sign_projects_to_where_it_stands(self):
+        _, along = project_onto_polyline(sign_at(87, CLEANING).position, UNION_ST_SOUTH)
+        self.assertAlmostEqual(87 / FEET_PER_M, along, delta=1.0)
+
+    def test_orientation_needs_two_signs(self):
+        self.assertEqual(0, block_orientation([(10.0, 30.0)]))
+        self.assertEqual(1, block_orientation([(10.0, 30.0), (50.0, 160.0)]))
+        self.assertEqual(-1, block_orientation([(50.0, 30.0), (10.0, 160.0)]))
+
+
+class ExtentTest(unittest.TestCase):
+    """The Union St bug, from the side the data comes in on."""
+
+    def union_street_south(self):
+        return [
+            sign_at(70, ANYTIME + " -->"),
+            sign_at(87, CLEANING + " -->"),
+            sign_at(212, TRUCKS + " -->"),
+            sign_at(212, CLEANING + " -->"),
+            sign_at(303, CLEANING + " <->"),
+            sign_at(575, CLEANING + " <->"),
+        ]
+
+    def rule(self, regulations, kind):
+        matches = [r for r in regulations if r.kind == kind]
+        self.assertEqual(1, len(matches), f"expected exactly one {kind}, got {matches}")
+        return matches[0]
+
+    def test_a_hydrant_sign_governs_metres_not_the_block(self):
+        rules = extents_for_block(self.union_street_south(), UNION_ST_SOUTH)
+        anytime = self.rule(rules, "NO_STANDING")
+
+        self.assertIsNotNone(anytime.extent, "the anytime sign has to be pinned down")
+        start, end = anytime.extent
+        # 70ft to the next sign at 87ft: about five metres of kerb, by the Van Brunt corner.
+        self.assertAlmostEqual(70 / FEET_PER_M, start, delta=2.0)
+        self.assertAlmostEqual(87 / FEET_PER_M, end, delta=2.0)
+
+    def test_the_cleaning_schedule_still_covers_the_rest_of_the_block(self):
+        rules = extents_for_block(self.union_street_south(), UNION_ST_SOUTH)
+        cleaning = self.rule(rules, "STREET_CLEANING")
+
+        # It starts at its first sign, 87ft in, and runs to the end of the block.
+        self.assertIsNotNone(cleaning.extent)
+        start, end = cleaning.extent
+        self.assertAlmostEqual(87 / FEET_PER_M, start, delta=2.0)
+        self.assertAlmostEqual(BLOCK_LENGTH_M, end, delta=2.0)
+
+    def test_repeated_sign_copy_collapses_to_one_rule(self):
+        # Four cleaning signs down the block, one rule out.
+        rules = extents_for_block(self.union_street_south(), UNION_ST_SOUTH)
+        self.assertEqual(1, len([r for r in rules if r.kind == "STREET_CLEANING"]))
+
+    def test_a_backwards_centreline_mirrors_the_extents(self):
+        reversed_block = list(reversed(UNION_ST_SOUTH))
+        signs = self.union_street_south()
+        rules = extents_for_block(signs, reversed_block)
+        anytime = self.rule(rules, "NO_STANDING")
+
+        # Same stretch of kerb, measured from the other end of the line.
+        start, end = anytime.extent
+        self.assertAlmostEqual(BLOCK_LENGTH_M - 87 / FEET_PER_M, start, delta=2.0)
+        self.assertAlmostEqual(BLOCK_LENGTH_M - 70 / FEET_PER_M, end, delta=2.0)
+
+    def test_signs_without_arrows_keep_the_whole_block(self):
+        signs = [sign_at(70, ANYTIME), sign_at(87, CLEANING)]
+        rules = extents_for_block(signs, UNION_ST_SOUTH)
+        self.assertTrue(all(r.extent is None for r in rules), rules)
+
+    def test_one_sign_alone_cannot_orient_the_block(self):
+        rules = extents_for_block([sign_at(70, ANYTIME + " -->")], UNION_ST_SOUTH)
+        self.assertTrue(all(r.extent is None for r in rules), rules)
+
+    def test_an_extent_reaching_both_ends_is_dropped(self):
+        signs = [sign_at(10, CLEANING + " <->"), sign_at(560, CLEANING + " <->")]
+        rules = extents_for_block(signs, UNION_ST_SOUTH)
+        self.assertIsNone(self.rule(rules, "STREET_CLEANING").extent)
+
+    def test_the_extent_reaches_the_app_in_the_dto(self):
+        rules = extents_for_block(self.union_street_south(), UNION_ST_SOUTH)
+        dto = self.rule(rules, "NO_STANDING").to_dto()
+        self.assertIn("a", dto)
+        self.assertIn("b", dto)
+        self.assertEqual(int, type(dto["a"]))
 
 
 if __name__ == "__main__":

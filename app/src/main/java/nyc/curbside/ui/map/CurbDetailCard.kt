@@ -109,15 +109,36 @@ fun CurbDetailCard(detail: CurbDetail, onDismiss: () -> Unit) {
 
             HorizontalDivider()
 
+            // With the tapped point in hand the rules divide: the ones governing that stretch of
+            // kerb, and the ones posted further down the block. Listing them together was how a
+            // bus stop came to look like the whole street's problem.
+            val here = segment.regulations.filter { it.governs(detail.alongMeters) }
+            val elsewhere = segment.regulations.size - here.size
+
             Text(
-                if (segment.regulations.isEmpty()) "No signs recorded on this curb" else "Signs on this curb",
+                when {
+                    here.isEmpty() -> "No signs cover this spot"
+                    detail.alongMeters != null -> "Signs covering this spot"
+                    else -> "Signs on this curb"
+                },
                 style = MaterialTheme.typography.labelMedium,
             )
-            segment.regulations.forEach { regulation ->
+            here.forEach { regulation ->
                 Text(
                     "·  ${rule(regulation)}",
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            if (elsewhere > 0) {
+                Text(
+                    if (elsewhere == 1) {
+                        "One more sign applies to a different stretch of this block."
+                    } else {
+                        "$elsewhere more signs apply to other stretches of this block."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
                 )
             }
         }
@@ -186,7 +207,10 @@ private fun rule(regulation: Regulation): String {
     // A curb whose days were guessed rather than read says so: the app's rule is that it never
     // guesses in the driver's favour without admitting it.
     val hedge = if (regulation.daysInferred) " (days assumed)" else ""
-    return "$what · $when_ · $days$hedge"
+    // Roughly how much kerb it covers. The exact metre marks mean nothing without knowing which
+    // corner they are measured from, but a length tells you whether it is a block or a doorway.
+    val reach = regulation.extent?.let { " · about ${it.lengthMeters.toInt()}m of kerb" } ?: ""
+    return "$what · $when_ · $days$hedge$reach"
 }
 
 private fun days(days: Set<DayOfWeek>): String {

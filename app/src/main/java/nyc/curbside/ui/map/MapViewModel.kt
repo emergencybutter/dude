@@ -50,6 +50,7 @@ class MapViewModel @Inject constructor(
     private var viewport: BoundingBox? = null
     private var loadJob: Job? = null
     private var selectedId: String? = null
+    private var selectedAt: LatLng? = null
     private var selectJob: Job? = null
 
     init {
@@ -109,11 +110,15 @@ class MapViewModel @Inject constructor(
             return
         }
         selectedId = hit.curb.segment.id
+        // The tapped point, not just the block: a block is no longer one answer, so the sheet has
+        // to know which stretch of it was asked about.
+        selectedAt = point
         refreshSelection()
     }
 
     fun clearSelection() {
         selectedId = null
+        selectedAt = null
         selectJob?.cancel()
         _state.value = _state.value.copy(selected = null)
     }
@@ -122,7 +127,9 @@ class MapViewModel @Inject constructor(
         val id = selectedId ?: return
         selectJob?.cancel()
         selectJob = viewModelScope.launch {
-            _state.value = _state.value.copy(selected = asp.curbDetail(id, _state.value.previewedAt))
+            _state.value = _state.value.copy(
+                selected = asp.curbDetail(id, _state.value.previewedAt, selectedAt),
+            )
         }
     }
 

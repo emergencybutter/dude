@@ -56,7 +56,10 @@ object ParkingWindow {
         now: ZonedDateTime,
         calendar: SuspensionCalendar = SuspensionCalendar.EMPTY,
         horizonDays: Int = SweepSchedule.HORIZON_DAYS,
+        alongMeters: Double? = null,
     ): ParkingAllowance {
+        @Suppress("NAME_SHADOWING")
+        val regulations = regulations.filter { it.governs(alongMeters) }
         if (regulations.isEmpty()) return ParkingAllowance.Unknown
 
         // Same guard as the evaluator: a sign nobody could parse is not a sign saying "park here".

@@ -6,6 +6,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import nyc.curbside.asp.CurbExtent
 import nyc.curbside.asp.Regulation
 import nyc.curbside.asp.RegulationKind
 import nyc.curbside.asp.TimeWindow
@@ -27,6 +28,13 @@ data class RegulationDto(
     @SerialName("e") val endMinute: Int? = null,
     @SerialName("r") val raw: String = "",
     @SerialName("i") val daysInferred: Boolean = false,
+    /**
+     * The stretch of curb this rule governs, in whole metres along the segment's polyline. Absent
+     * on rules that cover the whole block, which is most of them — and on every rule in a bundle
+     * built before the pipeline learned to read the arrows on signs.
+     */
+    @SerialName("a") val startMeters: Int? = null,
+    @SerialName("b") val endMeters: Int? = null,
 )
 
 object RegulationCodec {
@@ -43,6 +51,8 @@ object RegulationCodec {
         endMinute = regulation.window?.end?.let { it.hour * 60 + it.minute },
         raw = regulation.raw,
         daysInferred = regulation.daysInferred,
+        startMeters = regulation.extent?.startMeters?.let { Math.round(it).toInt() },
+        endMeters = regulation.extent?.endMeters?.let { Math.round(it).toInt() },
     )
 
     fun fromDto(dto: RegulationDto): Regulation {
@@ -60,6 +70,11 @@ object RegulationCodec {
             window = window,
             raw = dto.raw,
             daysInferred = dto.daysInferred,
+            extent = if (dto.startMeters != null && dto.endMeters != null) {
+                CurbExtent(dto.startMeters.toDouble(), dto.endMeters.toDouble())
+            } else {
+                null
+            },
         )
     }
 

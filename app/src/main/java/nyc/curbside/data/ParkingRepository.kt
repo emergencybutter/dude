@@ -106,7 +106,10 @@ class ParkingRepository @Inject constructor(
      */
     suspend fun setCurb(eventId: String, curbSegmentId: String) = withContext(Dispatchers.IO) {
         val event = dao.byId(eventId) ?: return@withContext
-        val curb = asp.curbById(curbSegmentId) ?: return@withContext
+        // Evaluated where the car actually stands: the block's rules are no longer uniform along
+        // it, so the stretch matters to when the reminder fires.
+        val curb = asp.curbById(curbSegmentId, at = LatLng(event.latitude, event.longitude))
+            ?: return@withContext
         val moveBy = curb.evaluation.moveBy?.toInstant()?.toEpochMilli()
 
         dao.update(

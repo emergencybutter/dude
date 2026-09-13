@@ -45,6 +45,18 @@ data class CurbEvaluation(
 }
 
 /**
+ * One run of a curb that has a single answer along its whole length.
+ *
+ * [geometry] is the slice of the curb's polyline this run covers, ready to draw on its own.
+ */
+data class CurbStretch(
+    val geometry: List<LatLng>,
+    val fromMeters: Double,
+    val toMeters: Double,
+    val evaluation: CurbEvaluation,
+)
+
+/**
  * Expands weekly [Regulation]s into dated windows and grades the result.
  *
  * All arithmetic goes through [java.time.ZonedDateTime] in [NYC], so the twice-yearly DST shifts
@@ -63,12 +75,20 @@ object SweepSchedule {
      */
     private const val SUSPENSION_BADGE_MAX_HOURS: Long = 12
 
+    /**
+     * @param alongMeters where on the curb the question is being asked, in metres along its
+     *   polyline. Rules that govern a different stretch are ignored. Null asks about the curb as a
+     *   whole, which applies every rule on it — the honest answer when the position is unknown.
+     */
     fun evaluate(
         regulations: List<Regulation>,
         now: ZonedDateTime,
         calendar: SuspensionCalendar = SuspensionCalendar.EMPTY,
         horizonDays: Int = HORIZON_DAYS,
+        alongMeters: Double? = null,
     ): CurbEvaluation {
+        @Suppress("NAME_SHADOWING")
+        val regulations = regulations.filter { it.governs(alongMeters) }
         if (regulations.isEmpty()) {
             return CurbEvaluation(CurbStatus.UNKNOWN, null, null, suspendedToday = false)
         }
@@ -167,6 +187,54 @@ object SweepSchedule {
         now: ZonedDateTime,
         calendar: SuspensionCalendar = SuspensionCalendar.EMPTY,
     ): CurbEvaluation = evaluate(segment.regulations, now, calendar)
+
+    /**
+     * The curb broken into runs that each have one answer, for drawing.
+     *
+     * A block is no longer one colour: a hydrant zone at its corner is restricted while the rest
+     * follows the cleaning schedule, and painting the whole line red was the bug that started
+     * this. The boundaries are the ends of every rule's extent; each run between them is evaluated
+     * on the rules that reach it, and neighbouring runs that come out the same are joined up again
+     * so an ordinary block is still one line.
+     */
+    fun stretches(
+        curb: LocatedCurb,
+        now: ZonedDateTime,
+        calendar: SuspensionCalendar = SuspensionCalendar.EMPTY,
+    ): List<CurbStretch> {
+        val length = Geo.lengthMeters(curb.geometry)
+        val regulations = curb.segment.regulations
+        val cuts = regulations.mapNotNull { it.extent }
+            .flatMap { listOf(it.startMeters, it.endMeters) }
+            .filter { it > MIN_STRETCH_METERS && it < length - MIN_STRETCH_METERS }
+            .distinct()
+            .sorted()
+
+        if (cuts.isEmpty() || length <= 0.0) {
+            return listOf(CurbStretch(curb.geometry, 0.0, length, evaluate(regulations, now, calendar)))
+        }
+
+        val edges = (listOf(0.0) + cuts + listOf(length))
+        val runs = ArrayList<CurbStretch>(edges.size - 1)
+        for (i in 0 until edges.size - 1) {
+            val from = edges[i]
+            val to = edges[i + 1]
+            // Asked at the midpoint: a boundary belongs to neither side, and a rule that ends here
+            // must not bleed into the run beyond it.
+            val evaluation = evaluate(regulations, now, calendar, HORIZON_DAYS, (from + to) / 2)
+
+            val previous = runs.lastOrNull()
+            if (previous != null && previous.evaluation.status == evaluation.status) {
+                runs[runs.lastIndex] = previous.copy(toMeters = to)
+            } else {
+                runs += CurbStretch(emptyList(), from, to, evaluation)
+            }
+        }
+        return runs.map { it.copy(geometry = Geo.slice(curb.geometry, it.fromMeters, it.toMeters)) }
+    }
+
+    /** Shorter than this and a run is survey noise, not a stretch of kerb worth drawing. */
+    private const val MIN_STRETCH_METERS = 1.0
 
     /** Shared with [ParkingWindow], which must call a curb hopeless on exactly the same grounds. */
     internal fun isAroundTheClock(regulation: Regulation): Boolean =

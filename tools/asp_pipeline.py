@@ -44,7 +44,7 @@ import sys
 import urllib.parse
 import urllib.request
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Iterable, Iterator, Sequence
 
@@ -99,6 +99,9 @@ class Regulation:
     end_minute: int | None
     raw: str
     days_inferred: bool = False
+    #: Metres along the block's polyline this rule governs, or None for the whole curb. Set late,
+    #: in extents_for_block, once the block's geometry and its signs' positions are both known.
+    extent: tuple[float, float] | None = None
 
     def to_dto(self) -> dict:
         """The compact shape ``RegulationCodec`` on the app side expects.
@@ -118,6 +121,11 @@ class Regulation:
             dto["e"] = self.end_minute
         if self.days_inferred:
             dto["i"] = True
+        if self.extent is not None:
+            # Whole metres. A sign's own position is good to a few metres at best, so decimals here
+            # would be false precision on top of survey error.
+            dto["a"] = int(round(self.extent[0]))
+            dto["b"] = int(round(self.extent[1]))
         return dto
 
 
@@ -426,6 +434,194 @@ def distance_to_polyline(point: tuple[float, float], points: Sequence[tuple[floa
     return best * METERS_PER_DEGREE_LAT
 
 
+def project_onto_polyline(
+    point: tuple[float, float], points: Sequence[tuple[float, float]]
+) -> tuple[float, float]:
+    """(metres off the line, metres along it from its first vertex) for the closest approach."""
+    lat, lon = point
+    scale = math.cos(math.radians(lat))
+    px, py = lon * scale, lat
+
+    best_distance, best_along = float("inf"), 0.0
+    travelled = 0.0
+    for (alat, alon), (blat, blon) in zip(points, points[1:]):
+        ax, ay = alon * scale, alat
+        bx, by = blon * scale, blat
+        dx, dy = bx - ax, by - ay
+        span = dx * dx + dy * dy
+        length = math.hypot(dx, dy)
+        t = 0.0 if span == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / span))
+        ddx, ddy = px - (ax + t * dx), py - (ay + t * dy)
+        distance = math.hypot(ddx, ddy)
+        if distance < best_distance:
+            best_distance, best_along = distance, travelled + t * length
+        travelled += length
+    return best_distance * METERS_PER_DEGREE_LAT, best_along * METERS_PER_DEGREE_LAT
+
+
+def polyline_length_m(points: Sequence[tuple[float, float]]) -> float:
+    total = 0.0
+    for (alat, alon), (blat, blon) in zip(points, points[1:]):
+        scale = math.cos(math.radians(alat))
+        total += math.hypot((blon - alon) * scale, blat - alat)
+    return total * METERS_PER_DEGREE_LAT
+
+
+# A sign's arrow is how DOT writes down how far its rule reaches: "<->" both ways from the sign,
+# "-->" onward towards the to-street, "<--" back towards the from-street. Without one the sign
+# speaks only for itself and this pipeline leaves the rule covering the whole block.
+ARROW_BOTH = re.compile(r"<-+>")
+ARROW_FORWARD = re.compile(r"(?<!<)-+>")
+ARROW_BACK = re.compile(r"<-+(?!>)")
+
+
+def parse_arrow(description: str) -> str | None:
+    text = normalize(description)
+    if ARROW_BOTH.search(text):
+        return "both"
+    if ARROW_FORWARD.search(text):
+        return "forward"
+    if ARROW_BACK.search(text):
+        return "back"
+    return None
+
+
+def block_orientation(samples: Sequence[tuple[float, float]]) -> int:
+    """+1 when the polyline is drawn from-street to to-street, -1 when it is drawn the other way.
+
+    Each sample is (metres along the polyline, feet from the from-street intersection). The two
+    should rise together; if they fall against each other the city drew the centreline backwards
+    relative to how it names the block. Returns 0 when the signs cannot say, which is the signal
+    to leave every rule covering the whole curb rather than guess at an extent.
+    """
+    usable = [s for s in samples if s[1] is not None]
+    if len(usable) < 2:
+        return 0
+
+    mean_along = sum(a for a, _ in usable) / len(usable)
+    mean_feet = sum(f for _, f in usable) / len(usable)
+    covariance = sum((a - mean_along) * (f - mean_feet) for a, f in usable)
+    if abs(covariance) < 1e-6:
+        return 0
+    return 1 if covariance > 0 else -1
+
+
+def _merge_spans(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+    for start, end in sorted(spans):
+        if out and start <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], end))
+        else:
+            out.append((start, end))
+    return out
+
+
+#: A rule reaching within this much of both block ends is called block-wide and loses its extent.
+#: Signs stand a few metres in from the corner, so an exact comparison would never fire.
+BLOCK_WIDE_SLACK_M = 12.0
+
+#: How far a lone arrowed sign reaches when nothing stands beyond it to stop it. A hydrant zone is
+#: about this long, and it is the failure that matters least: too short and the map under-warns.
+UNBOUNDED_REACH_M = 60.0
+
+
+def extents_for_block(
+    signs: Sequence["SignRecord"], points: Sequence[tuple[float, float]]
+) -> list[Regulation]:
+    """Every rule posted on a block, each narrowed to the stretch of curb its signs claim.
+
+    A curb here is a whole block-side, but the city's data is per sign, so a single "NO STANDING
+    ANYTIME" posted at a hydrant used to condemn the entire block. The arrows say otherwise: on
+    Union St's south side that sign stands 70 feet in with "-->", and the next sign is at 87 feet,
+    so it speaks for about five metres of kerb out of a hundred and seventy.
+
+    A rule keeps the whole block whenever the data cannot narrow it — no arrow, no second sign to
+    orient the block by, a span that reaches both ends anyway. Guessing an extent too small would
+    paint a bus stop green, so every uncertainty here resolves outwards.
+    """
+    length = polyline_length_m(points)
+    if length <= 0:
+        return _deduplicate(r for sign in signs for r in sign.regulations)
+
+    placed = []
+    for sign in signs:
+        _, along = project_onto_polyline(sign.position, points)
+        placed.append((sign, along))
+
+    orientation = block_orientation([(along, sign.feet) for sign, along in placed])
+    if orientation == 0:
+        return _deduplicate(r for sign in signs for r in sign.regulations)
+
+    # Work in "u": metres from the from-street end, whichever end of the polyline that is.
+    def to_u(along: float) -> float:
+        return along if orientation > 0 else length - along
+
+    positioned = [(sign, to_u(along)) for sign, along in placed]
+    boundaries = sorted(
+        u for sign, u in positioned if any(r.kind != "OTHER" for r in sign.regulations)
+    )
+
+    by_rule: dict[tuple, list[tuple["SignRecord", float]]] = defaultdict(list)
+    first_seen: dict[tuple, Regulation] = {}
+    for sign, u in positioned:
+        for regulation in sign.regulations:
+            key = (regulation.kind, regulation.days, regulation.start_minute, regulation.end_minute)
+            by_rule[key].append((sign, u))
+            first_seen.setdefault(key, regulation)
+
+    out: list[Regulation] = []
+    for key, carriers in by_rule.items():
+        spans: list[tuple[float, float]] = []
+        whole_block = False
+
+        for sign, u in carriers:
+            # A sign reaches as far as the next sign and no further, whatever that one says. Signs
+            # of the same rule bound each other too — a chain of cleaning signs down a block each
+            # covers its own stretch, and the union of them covers the block.
+            #
+            # Informational signs are not boundaries: "PAY-BY-CELL LOCATOR NUMBER" standing between
+            # a hydrant sign and the kerb it protects would otherwise cut the zone in half.
+            after = min((o for o in boundaries if o > u + 1e-6), default=None)
+            before = max((o for o in boundaries if o < u - 1e-6), default=None)
+
+            if sign.arrow == "forward":
+                spans.append((u, after if after is not None else min(length, u + UNBOUNDED_REACH_M)))
+            elif sign.arrow == "back":
+                spans.append((before if before is not None else max(0.0, u - UNBOUNDED_REACH_M), u))
+            elif sign.arrow == "both":
+                spans.append((before if before is not None else 0.0, after if after is not None else length))
+            else:
+                whole_block = True
+                break
+
+        regulation = first_seen[key]
+        if whole_block or not spans:
+            out.append(regulation)
+            continue
+
+        merged = _merge_spans(spans)
+        start, end = merged[0][0], merged[-1][1]
+        if start <= BLOCK_WIDE_SLACK_M and end >= length - BLOCK_WIDE_SLACK_M:
+            out.append(regulation)
+            continue
+
+        # Back into polyline metres, which is the frame the app projects a car or a tap into.
+        extent = (start, end) if orientation > 0 else (length - end, length - start)
+        out.append(replace(regulation, extent=extent))
+
+    return out
+
+
+def _deduplicate(regulations: Iterable[Regulation]) -> list[Regulation]:
+    """One entry per distinct rule. The same sign copy is posted many times down a block, and the
+    supersedes note differs between them, so equality on the whole record keeps every repeat."""
+    seen: dict[tuple, Regulation] = {}
+    for regulation in regulations:
+        key = (regulation.kind, regulation.days, regulation.start_minute, regulation.end_minute)
+        seen.setdefault(key, regulation)
+    return list(seen.values())
+
+
 def bbox(points: Sequence[tuple[float, float]]) -> list[float]:
     lats = [p[0] for p in points]
     lons = [p[1] for p in points]
@@ -489,10 +685,27 @@ class SegmentBuild:
     from_street: str
     to_street: str
     side: str
-    regulations: list[Regulation] = field(default_factory=list)
     geometry: list[tuple[float, float]] = field(default_factory=list)
-    #: Where this curb's signs physically stand, in WGS84. Picks the block out of the street.
-    positions: list[tuple[float, float]] = field(default_factory=list)
+    #: Every sign posted on this curb, kept apart rather than pooled: which stretch each one
+    #: governs is the difference between a bus stop and a block.
+    signs: list["SignRecord"] = field(default_factory=list)
+
+    @property
+    def positions(self) -> list[tuple[float, float]]:
+        """Where this curb's signs physically stand, in WGS84. Picks the block out of the street."""
+        return [sign.position for sign in self.signs]
+
+
+@dataclass(frozen=True)
+class SignRecord:
+    """One sign: what it says, where it stands, and how far it says the rule reaches."""
+
+    position: tuple[float, float]
+    #: Feet from the from-street intersection, as the city measured it. Used only to work out
+    #: which way round the centreline was drawn; the position does the real work.
+    feet: float | None
+    arrow: str | None
+    regulations: tuple[Regulation, ...]
 
 
 # The two datasets spell the same street differently: the sign inventory writes "STERLING STREET"
@@ -600,18 +813,29 @@ def build_segments(signs: Iterable[dict], centerlines: Iterable[dict], report_un
         if not on:
             continue
 
+        x, y = row.get("sign_x_coord"), row.get("sign_y_coord")
+        if not x or not y:
+            continue
+        try:
+            position = state_plane_to_wgs84(float(x), float(y))
+        except (TypeError, ValueError):
+            continue
+
+        try:
+            feet = float(row.get("distance_from_intersection"))
+        except (TypeError, ValueError):
+            feet = None
+
         key = segment_key(on, frm, to, side)
         build = builds.setdefault(key, SegmentBuild(on, frm, to, side))
-        for regulation in readable:
-            if regulation not in build.regulations:
-                build.regulations.append(regulation)
-
-        x, y = row.get("sign_x_coord"), row.get("sign_y_coord")
-        if x and y:
-            try:
-                build.positions.append(state_plane_to_wgs84(float(x), float(y)))
-            except (TypeError, ValueError):
-                pass
+        build.signs.append(
+            SignRecord(
+                position=position,
+                feet=feet,
+                arrow=parse_arrow(description),
+                regulations=tuple(readable),
+            )
+        )
 
     out: list[dict] = []
     for key, build in builds.items():
@@ -635,7 +859,10 @@ def build_segments(signs: Iterable[dict], centerlines: Iterable[dict], report_un
                 "sign": side_sign(points, build.side),
                 "bbox": bbox(points),
                 "geom": encode_polyline(points),
-                "rules": json.dumps([r.to_dto() for r in build.regulations], separators=(",", ":")),
+                "rules": json.dumps(
+                    [r.to_dto() for r in extents_for_block(build.signs, points)],
+                    separators=(",", ":"),
+                ),
             }
         )
 
@@ -703,7 +930,8 @@ def main(argv: Sequence[str]) -> int:
     signs = load_rows(
         args.signs,
         SIGNS_DATASET,
-        "sign_description,on_street,from_street,to_street,side_of_street,borough,sign_x_coord,sign_y_coord",
+        "sign_description,on_street,from_street,to_street,side_of_street,borough,sign_x_coord,sign_y_coord,"
+        "distance_from_intersection",
         where,
         args.limit,
     )

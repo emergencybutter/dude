@@ -61,6 +61,21 @@ data class TimeWindow(val start: LocalTime, val end: LocalTime) {
 }
 
 /**
+ * The stretch of a curb a rule governs, in metres along the block's polyline from its first vertex.
+ *
+ * A sign speaks for a length of kerb, not for a block: "NO STANDING ANYTIME" at a hydrant covers
+ * the few metres between it and the next sign. The pipeline works this out from the arrow on the
+ * sign and the gap to its neighbours; a rule with no extent governs the whole curb, which is what
+ * every rule did before the arrows were read.
+ */
+data class CurbExtent(val startMeters: Double, val endMeters: Double) {
+    val lengthMeters: Double get() = endMeters - startMeters
+
+    operator fun contains(alongMeters: Double): Boolean =
+        alongMeters >= startMeters && alongMeters <= endMeters
+}
+
+/**
  * One parsed clause off a DOT sign: what is forbidden, on which weekdays, between which hours.
  *
  * A null [window] means the rule is in force all day ("NO STANDING ANYTIME").
@@ -72,6 +87,8 @@ data class Regulation(
     val raw: String,
     /** True when [days] was assumed rather than read off the sign. Lowers display confidence. */
     val daysInferred: Boolean = false,
+    /** Which stretch of the curb this governs; null for all of it. */
+    val extent: CurbExtent? = null,
 ) {
     val isAllDay: Boolean get() = window == null
 
@@ -82,6 +99,16 @@ data class Regulation(
     val isAdvisory: Boolean get() = kind == RegulationKind.TIME_LIMITED || kind == RegulationKind.OTHER
 
     fun appliesOn(day: DayOfWeek): Boolean = day in days
+
+    /**
+     * True when this rule governs the given point along the curb.
+     *
+     * A null [alongMeters] means the caller does not know where on the block it is asking about —
+     * a curb evaluated as a whole, a fix too rough to place. Every rule applies in that case: the
+     * question "is any of this block restricted" has to be answered yes.
+     */
+    fun governs(alongMeters: Double?): Boolean =
+        extent == null || alongMeters == null || alongMeters in extent
 }
 
 /** Which side of the street a run of signs governs. Sweeping is per-side, so this is load-bearing. */

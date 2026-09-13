@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 import nyc.curbside.asp.AspRepository
 import nyc.curbside.asp.CurbEvaluation
 import nyc.curbside.asp.CurbStatus
+import nyc.curbside.asp.LatLng
 import nyc.curbside.asp.NYC
 import nyc.curbside.data.CurbsideSettings
 import nyc.curbside.data.ParkingRepository
@@ -52,7 +53,9 @@ class HomeViewModel @Inject constructor(
         settings.autoShareEnabled,
         tick,
     ) { car, partnerCars, autoShare, now ->
-        val evaluated = car?.curbSegmentId?.let { asp.curbById(it, ZonedDateTime.now(NYC)) }
+        val evaluated = car?.curbSegmentId?.let {
+            asp.curbById(it, ZonedDateTime.now(NYC), LatLng(car.latitude, car.longitude))
+        }
 
         HomeUiState(
             car = car,

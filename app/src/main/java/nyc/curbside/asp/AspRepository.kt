@@ -12,7 +12,13 @@ import nyc.curbside.data.db.CurbSegmentEntity
 /** A curb ready to draw or reason about: geometry, rules, and its status at a given moment. */
 data class EvaluatedCurb(
     val curb: LocatedCurb,
+    /** The curb taken as a whole: every rule on it, wherever it applies. */
     val evaluation: CurbEvaluation,
+    /**
+     * The same curb broken into runs that each have one answer, for drawing. An ordinary block is
+     * a single stretch; one with a hydrant zone or a bus stop is two or three.
+     */
+    val stretches: List<CurbStretch> = emptyList(),
 )
 
 /**
@@ -26,6 +32,12 @@ data class CurbDetail(
     val curb: EvaluatedCurb,
     val allowance: ParkingAllowance,
     val at: ZonedDateTime,
+    /**
+     * Where along the curb the question was asked, in metres. Set when the user tapped a spot, so
+     * the answer is about that stretch rather than the worst of the whole block; null when the
+     * whole curb is being described.
+     */
+    val alongMeters: Double? = null,
 )
 
 /**
@@ -56,7 +68,11 @@ class AspRepository @Inject constructor(
         dao.inBox(box.minLat, box.minLon, box.maxLat, box.maxLon, limit)
             .map { entity ->
                 val located = entity.toLocatedCurb()
-                EvaluatedCurb(located, SweepSchedule.evaluate(located.segment.regulations, now, calendar))
+                EvaluatedCurb(
+                    curb = located,
+                    evaluation = SweepSchedule.evaluate(located.segment.regulations, now, calendar),
+                    stretches = SweepSchedule.stretches(located, now, calendar),
+                )
             }
     }
 
@@ -79,12 +95,24 @@ class AspRepository @Inject constructor(
             .map { it.toLocatedCurb() }
 
         CurbMatcher.rank(point, candidates, accuracyMeters).map { match ->
-            match to SweepSchedule.evaluate(match.curb.segment.regulations, now, calendar)
+            // Where along the block the car actually stands, so a hydrant zone forty metres away
+            // is not the reason a reminder fires.
+            val along = Geo.alongMeters(match.curb.geometry, point)
+            match to SweepSchedule.evaluate(
+                match.curb.segment.regulations,
+                now,
+                calendar,
+                SweepSchedule.HORIZON_DAYS,
+                along,
+            )
         }
     }
 
-    suspend fun curbById(id: String, now: ZonedDateTime = ZonedDateTime.now(NYC)): EvaluatedCurb? =
-        curbDetail(id, now)?.curb
+    suspend fun curbById(
+        id: String,
+        now: ZonedDateTime = ZonedDateTime.now(NYC),
+        at: LatLng? = null,
+    ): EvaluatedCurb? = curbDetail(id, now, at)?.curb
 
     /**
      * One curb, graded and with its next free span worked out: what the map's detail sheet needs
@@ -93,18 +121,44 @@ class AspRepository @Inject constructor(
      * Reads through the database rather than the viewport the tap came from, so the sheet survives
      * the user panning the curb off screen.
      */
-    suspend fun curbDetail(id: String, now: ZonedDateTime = ZonedDateTime.now(NYC)): CurbDetail? =
-        withContext(Dispatchers.IO) {
-            val entity = dao.byId(id) ?: return@withContext null
-            val calendar = suspensions.current()
-            val located = entity.toLocatedCurb()
-            val regulations = located.segment.regulations
-            CurbDetail(
-                curb = EvaluatedCurb(located, SweepSchedule.evaluate(regulations, now, calendar)),
-                allowance = ParkingWindow.allowance(regulations, now, calendar),
-                at = now,
-            )
-        }
+    /**
+     * @param at a point on the curb the caller is asking about — the spot the user tapped, or where
+     *   the car stands. Rules governing other stretches of the block are left out of the answer.
+     */
+    suspend fun curbDetail(
+        id: String,
+        now: ZonedDateTime = ZonedDateTime.now(NYC),
+        at: LatLng? = null,
+    ): CurbDetail? = withContext(Dispatchers.IO) {
+        val entity = dao.byId(id) ?: return@withContext null
+        val calendar = suspensions.current()
+        val located = entity.toLocatedCurb()
+        val regulations = located.segment.regulations
+        val along = at?.let { Geo.alongMeters(located.geometry, it) }
+
+        CurbDetail(
+            curb = EvaluatedCurb(
+                curb = located,
+                evaluation = SweepSchedule.evaluate(
+                    regulations,
+                    now,
+                    calendar,
+                    SweepSchedule.HORIZON_DAYS,
+                    along,
+                ),
+                stretches = SweepSchedule.stretches(located, now, calendar),
+            ),
+            allowance = ParkingWindow.allowance(
+                regulations,
+                now,
+                calendar,
+                SweepSchedule.HORIZON_DAYS,
+                along,
+            ),
+            at = now,
+            alongMeters = along,
+        )
+    }
 
     suspend fun isInstalled(): Boolean = withContext(Dispatchers.IO) { dao.count() > 0 }
 
