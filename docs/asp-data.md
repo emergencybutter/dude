@@ -54,8 +54,10 @@ Fields worth explaining:
   distinguishing them, and it depends on which way the city happened to draw the segment — hence
   computed per segment rather than assumed.
 - **`rules`** is a compact DTO array: `k` kind, `d` weekday bitmask with bit 0 = Monday, `s`/`e`
-  minutes past midnight. Repeated across ~150k rows, so terseness is worth the opacity. `RegulationCodec`
-  on the app side is the matching decoder.
+  minutes past midnight. Repeated across ~174k rules, so terseness is worth the opacity. `RegulationCodec`
+  on the app side is the matching decoder. The original sign copy is deliberately **not** carried:
+  it was a third of the uncompressed bundle and Room stores it as text, so it was the largest single
+  thing on disk, and nothing reads it — the app renders a status and a window, never the sign.
 
 ## Parser parity
 
@@ -83,6 +85,29 @@ NO PARKING MIDNIGHT-4AM / NO STOPPING 7AM-MIDNIGHT           ← midnight means 
 Anything else becomes `OTHER` with no days, which the rule engine reports as `UNKNOWN`. Run the
 pipeline with `--report-unparsed` to see the most common phrasings a build could not read; that list
 is the work queue.
+
+## The seed
+
+A release build carries a copy of the bundle in `app/src/main/assets/asp`, so the map has rules on
+it the first time it is opened rather than a blank city and a download over whatever network the
+user is on. `AspDatasetInstaller.installSeedIfEmpty` loads it once, on first launch; the monthly
+network refresh then replaces it whenever the published version moves on.
+
+The asset is **built, not committed** — it is several megabytes and regenerated monthly, and
+committing it would add that much to the repository's history every time. A plain clone therefore
+has no seed and falls back to downloading, which is why the loader treats a missing asset as normal
+rather than as an error. Before cutting a release:
+
+```bash
+python3 tools/asp_pipeline.py --out app/src/main/assets/asp --seed
+```
+
+`--seed` names the file `segments.bundle` rather than `segments-<version>.jsonl.gz`, and the name is
+load-bearing: aapt treats an asset ending in `.gz` as something to gunzip at package time, storing
+it without the suffix. That both triples what the APK carries — 6.3 MB became 27 MB — and means the
+file the manifest names is not the file that exists on the device, so the seed silently never loads.
+`noCompress += "bundle"` in `app/build.gradle.kts` then stops the packager deflating bytes that are
+already gzip.
 
 ## On-device storage
 

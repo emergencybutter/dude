@@ -1,6 +1,7 @@
 package nyc.curbside.asp
 
 import android.content.Context
+import androidx.annotation.VisibleForTesting
 import androidx.hilt.work.HiltWorker
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -11,6 +12,8 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.InputStream
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
 import javax.inject.Inject
@@ -40,9 +43,18 @@ import okhttp3.Request
  * The download happens once on first run, on unmetered network, and then monthly — the sign
  * inventory changes slowly. Suspensions, which change weekly, come from a separate and much smaller
  * feed; see [SuspensionRepository].
+ *
+ * ## The seed
+ *
+ * A release build carries a copy of the bundle in its assets, so the map has rules on it the first
+ * time it is opened rather than a blank city and a "downloading" banner on whatever network the
+ * user happens to be on. [installSeedIfEmpty] loads it once, and the network refresh above then
+ * replaces it whenever the published version moves on. The asset is built, not committed — see
+ * `docs/asp-data.md` — so a plain clone simply has no seed and falls back to downloading.
  */
 @Singleton
 class AspDatasetInstaller @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val dao: CurbSegmentDao,
     private val settings: CurbsideSettings,
     private val http: OkHttpClient,
@@ -71,6 +83,31 @@ class AspDatasetInstaller @Inject constructor(
         true
     }
 
+    /**
+     * Installs the bundle baked into the APK, if there is one and the table is empty.
+     *
+     * Cheap to call on every launch: one indexed count when a dataset is already present. Never
+     * overwrites a downloaded dataset, which is by definition at least as new as the seed.
+     *
+     * @return true when the seed was installed.
+     */
+    suspend fun installSeedIfEmpty(): Boolean = withContext(Dispatchers.IO) {
+        if (dao.count() > 0) return@withContext false
+
+        val manifest = readSeed(SEED_MANIFEST) { json.decodeFromString<Manifest>(it.readBytes().decodeToString()) }
+            ?: return@withContext false
+        val segments = readSeed("$SEED_DIR/${manifest.path}", ::parseSegments) ?: return@withContext false
+        if (segments.isEmpty()) return@withContext false
+
+        segments.chunked(INSERT_CHUNK).forEach { dao.insertAll(it) }
+        settings.setAspDatasetVersion(manifest.version)
+        true
+    }
+
+    /** Absent assets are the normal case in a clone that never ran the pipeline, not an error. */
+    private fun <T> readSeed(path: String, parse: (InputStream) -> T): T? =
+        runCatching { context.assets.open(path).use(parse) }.getOrNull()
+
     private fun fetchManifest(): Manifest? = runCatching {
         http.newCall(Request.Builder().url("${BuildConfig.ASP_DATASET_BASE_URL}/manifest.json").build())
             .execute().use { response ->
@@ -85,16 +122,22 @@ class AspDatasetInstaller @Inject constructor(
                 if (!response.isSuccessful) return null
                 val stream = response.body?.byteStream() ?: return null
 
-                // Streamed and parsed line by line: the decompressed bundle is tens of megabytes
-                // and holding it as a single String would be an out-of-memory kill on a small phone.
-                GZIPInputStream(stream).bufferedReader().useLines { lines ->
-                    lines.mapNotNull { line ->
-                        if (line.isBlank()) return@mapNotNull null
-                        runCatching { json.decodeFromString<SegmentRow>(line).toEntity() }.getOrNull()
-                    }.toList()
-                }
+                parseSegments(stream)
             }
     }.getOrNull()
+
+    /**
+     * Streamed and parsed line by line: the decompressed bundle is tens of megabytes and holding it
+     * as a single String would be an out-of-memory kill on a small phone.
+     */
+    @VisibleForTesting
+    internal fun parseSegments(stream: InputStream): List<CurbSegmentEntity> =
+        GZIPInputStream(stream).bufferedReader().useLines { lines ->
+            lines.mapNotNull { line ->
+                if (line.isBlank()) return@mapNotNull null
+                runCatching { json.decodeFromString<SegmentRow>(line).toEntity() }.getOrNull()
+            }.toList()
+        }
 
     @Serializable
     private data class Manifest(
@@ -134,6 +177,10 @@ class AspDatasetInstaller @Inject constructor(
 
     companion object {
         private const val INSERT_CHUNK = 2_000
+
+        /** Where `tools/asp_pipeline.py --out app/src/main/assets/asp` leaves its output. */
+        private const val SEED_DIR = "asp"
+        private const val SEED_MANIFEST = "$SEED_DIR/manifest.json"
 
         /**
          * Schedules the periodic refresh. Monthly for the sign inventory, weekly for suspensions,

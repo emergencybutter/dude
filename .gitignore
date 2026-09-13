@@ -18,3 +18,7 @@ __pycache__/
 
 # Kotlin compiler session scratch
 .kotlin/
+
+# The seeded curb bundle: built by tools/asp_pipeline.py, several MB, and regenerated
+# monthly. Kept out of git so refreshes do not accumulate in history forever.
+app/src/main/assets/asp/

@@ -67,6 +67,13 @@ android {
         buildConfig = true
     }
 
+    androidResources {
+        // The seed bundle is already gzip; deflating it again in the APK gains nothing and costs
+        // build time. (The extension is not .gz on purpose — aapt would gunzip that at package
+        // time, tripling what ships. See write_bundle in tools/asp_pipeline.py.)
+        noCompress += "bundle"
+    }
+
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }

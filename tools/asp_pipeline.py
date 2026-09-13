@@ -25,6 +25,7 @@ Usage::
     python3 tools/asp_pipeline.py --out dist
     python3 tools/asp_pipeline.py --out dist --borough Brooklyn --limit 5000
     python3 tools/asp_pipeline.py --out dist --signs cached/signs.json --centerlines cached/cscl.json
+    python3 tools/asp_pipeline.py --out app/src/main/assets/asp --seed
 
 The parsing rules mirror ``asp-core``'s ``SignParser`` exactly; ``--report-unparsed`` prints the
 sign descriptions this build could not read, which is the input to improving both.
@@ -48,6 +49,9 @@ from datetime import datetime, timezone
 from typing import Iterable, Iterator, Sequence
 
 SOCRATA_HOST = "https://data.cityofnewyork.us"
+
+# Deliberately no .gz: see write_bundle.
+SEED_FILENAME = "segments.bundle"
 SIGNS_DATASET = "nfid-uabd"
 CENTERLINE_DATASET = "inkn-q76z"
 PAGE_SIZE = 50_000
@@ -97,7 +101,14 @@ class Regulation:
     days_inferred: bool = False
 
     def to_dto(self) -> dict:
-        """The compact shape ``RegulationCodec`` on the app side expects."""
+        """The compact shape ``RegulationCodec`` on the app side expects.
+
+        The original sign copy is deliberately not carried. It is a third of the uncompressed
+        bundle — 13 MB of "(SUPERSEDES SP-369CA)" across 174k rules for the whole city — and Room
+        stores it as text, so it was the largest single thing on disk. Nothing reads it: the app
+        renders a status and a window, never the sign. Should a "why is this curb marked this way"
+        screen ever want it, it comes back from the pipeline, not from every phone's database.
+        """
         dto: dict = {
             "k": self.kind,
             "d": sum(1 << day for day in self.days),
@@ -105,8 +116,6 @@ class Regulation:
         if self.start_minute is not None and self.end_minute is not None:
             dto["s"] = self.start_minute
             dto["e"] = self.end_minute
-        if self.raw:
-            dto["r"] = self.raw
         if self.days_inferred:
             dto["i"] = True
         return dto
@@ -497,7 +506,14 @@ def build_segments(signs: Iterable[dict], centerlines: Iterable[dict], report_un
     return out, stats
 
 
-def write_bundle(segments: list[dict], out_dir: str) -> dict:
+def write_bundle(segments: list[dict], out_dir: str, seed: bool = False) -> dict:
+    """Write the bundle and its manifest.
+
+    ``seed`` writes the bundle under a fixed, extension-free name for packaging into the APK's
+    assets. The name matters: aapt treats an asset ending in ``.gz`` as something to be helpfully
+    gunzipped at package time, storing it without the suffix — which both triples what the APK
+    carries and means the file the manifest names is not the file that exists on the device.
+    """
     os.makedirs(out_dir, exist_ok=True)
 
     # Content-addressed version: rebuilding unchanged input produces an unchanged version, so the
@@ -507,7 +523,7 @@ def write_bundle(segments: list[dict], out_dir: str) -> dict:
         digest.update(json.dumps(segment, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     version = digest.hexdigest()[:12]
 
-    filename = f"segments-{version}.jsonl.gz"
+    filename = SEED_FILENAME if seed else f"segments-{version}.jsonl.gz"
     with gzip.open(os.path.join(out_dir, filename), "wt", encoding="utf-8") as handle:
         for segment in segments:
             handle.write(json.dumps(segment, separators=(",", ":")))
@@ -532,6 +548,11 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--signs", help="path to a cached signs JSON file instead of the API")
     parser.add_argument("--centerlines", help="path to a cached centreline JSON file instead of the API")
     parser.add_argument("--report-unparsed", action="store_true", help="print sign copy the parser could not read")
+    parser.add_argument(
+        "--seed",
+        action="store_true",
+        help=f"name the bundle {SEED_FILENAME}, for packaging into app/src/main/assets/asp",
+    )
     args = parser.parse_args(argv)
 
     where = f"upper(borough)='{args.borough.upper()}'" if args.borough else None
@@ -551,7 +572,7 @@ def main(argv: Sequence[str]) -> int:
     print(f"  {len(centerlines)} centreline rows", file=sys.stderr)
 
     segments, stats = build_segments(signs, centerlines, args.report_unparsed)
-    manifest = write_bundle(segments, args.out)
+    manifest = write_bundle(segments, args.out, seed=args.seed)
 
     parsed_pct = 100.0 * stats["signs_parsed"] / stats["signs"] if stats["signs"] else 0.0
     print(
