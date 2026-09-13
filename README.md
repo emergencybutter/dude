@@ -72,7 +72,7 @@ failing the build, so a fresh clone compiles and runs.
 
 | Key | What it does if missing |
 | --- | --- |
-| `MAP_STYLE_URL` | A MapLibre style URL for the basemap. Blank means a blank basemap; the curb overlay still draws |
+| `MAP_STYLE_URL` | A MapLibre style URL for the basemap. Blank means a blank basemap; the curb overlay still draws. `https://tiles.openfreemap.org/styles/liberty` needs no key and has the street detail this is useless without |
 | `NYC_311_API_KEY` | Free from the [NYC API portal](https://api-portal.nyc.gov/). Blank means no suspension calendar, so holidays are treated as ordinary days |
 | `ASP_DATASET_BASE_URL` | Where `manifest.json` and the segment bundle are hosted. Blank means no curb data, so the map is empty and parking spots get no schedule |
 

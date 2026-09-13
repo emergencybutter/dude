@@ -132,10 +132,7 @@ private fun AspMap(
                         style.addSource(AspMapLayer.emptySource())
                         AspMapLayer.layers(darkTheme).forEach(style::addLayer)
 
-                        // Only reload on idle, never mid-gesture: querying and re-serialising a few
-                        // thousand features on every frame of a pan would drop the map to single
-                        // digit frames per second for no benefit.
-                        map.addOnCameraIdleListener {
+                        fun reportViewport() {
                             val bounds = map.projection.visibleRegion.latLngBounds
                             onViewportChanged(
                                 BoundingBox(
@@ -146,6 +143,17 @@ private fun AspMap(
                                 ),
                             )
                         }
+
+                        // Only reload on idle, never mid-gesture: querying and re-serialising a few
+                        // thousand features on every frame of a pan would drop the map to single
+                        // digit frames per second for no benefit.
+                        map.addOnCameraIdleListener(::reportViewport)
+
+                        // The camera is positioned before the style finishes loading, so it is
+                        // already at rest by the time the listener above exists and no idle event
+                        // is ever fired for the opening view. Without this the map opens empty and
+                        // only fills in once the user pans.
+                        reportViewport()
                     }
                 }
 
