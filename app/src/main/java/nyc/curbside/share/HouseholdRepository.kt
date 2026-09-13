@@ -1,8 +1,12 @@
 package nyc.curbside.share
 
+import android.content.Context
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
+import dagger.Lazy
+import dagger.hilt.android.qualifiers.ApplicationContext
 import java.security.SecureRandom
 import java.time.Instant
 import javax.inject.Inject
@@ -10,6 +14,7 @@ import javax.inject.Singleton
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.tasks.await
 import nyc.curbside.data.CurbsideSettings
 
@@ -36,11 +41,20 @@ data class ReceivedParking(
  * scans the QR code, which carries the household id and the key. The invite doc lets the joiner add
  * themselves to the member list once, and then expires. The key itself never passes through
  * Firestore — only through the camera.
+ *
+ * ## When there is no Firebase project
+ *
+ * Sharing is the one feature with a dependency the rest of the app does not have, so a build with
+ * no `google-services.json` has to stay usable rather than take the process down with it. Both
+ * handles are [Lazy]: resolving either one initialises Firebase, which throws when no config was
+ * supplied, so nothing here touches them until [isAvailable] confirms a default [FirebaseApp]
+ * exists. Every entry point then returns the same nothing it returns when the network is down.
  */
 @Singleton
 class HouseholdRepository @Inject constructor(
-    private val firestore: FirebaseFirestore,
-    private val auth: FirebaseAuth,
+    @ApplicationContext private val context: Context,
+    private val firestoreProvider: Lazy<FirebaseFirestore>,
+    private val authProvider: Lazy<FirebaseAuth>,
     private val crypto: HouseholdCrypto,
     private val keys: HouseholdKeyStore,
     private val settings: CurbsideSettings,
@@ -48,7 +62,15 @@ class HouseholdRepository @Inject constructor(
 
     private val random = SecureRandom()
 
+    /** False in a build with no `google-services.json`: sharing is off, the rest of the app is not. */
+    val isAvailable: Boolean get() = FirebaseApp.getApps(context).isNotEmpty()
+
+    private val firestore: FirebaseFirestore get() = firestoreProvider.get()
+
+    private val auth: FirebaseAuth get() = authProvider.get()
+
     suspend fun signInIfNeeded(): String? {
+        if (!isAvailable) return null
         auth.currentUser?.let { return it.uid }
         return runCatching { auth.signInAnonymously().await().user?.uid }.getOrNull()
     }
@@ -114,7 +136,9 @@ class HouseholdRepository @Inject constructor(
 
     suspend fun leave() {
         val householdId = settings.readHouseholdId() ?: return
-        val uid = auth.currentUser?.uid
+        // Forgetting the household locally has to work even when the server cannot be told, or a
+        // device whose Firebase config went away could never leave.
+        val uid = if (isAvailable) auth.currentUser?.uid else null
         if (uid != null) {
             runCatching {
                 firestore.collection(HOUSEHOLDS).document(householdId)
@@ -158,7 +182,10 @@ class HouseholdRepository @Inject constructor(
     }
 
     /** Live stream of the partner's parkings, decrypted locally. */
-    fun observeIncoming(householdId: String): Flow<List<ReceivedParking>> = callbackFlow {
+    fun observeIncoming(householdId: String): Flow<List<ReceivedParking>> =
+        if (isAvailable) incoming(householdId) else flowOf(emptyList())
+
+    private fun incoming(householdId: String): Flow<List<ReceivedParking>> = callbackFlow {
         val myUid = auth.currentUser?.uid
         val registration = firestore.collection(HOUSEHOLDS).document(householdId)
             .collection(PARKINGS)

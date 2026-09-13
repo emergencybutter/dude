@@ -90,7 +90,14 @@ private fun SharingCard(state: SettingsUiState, viewModel: SettingsViewModel) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Sharing", style = MaterialTheme.typography.titleMedium)
 
-            if (state.householdId == null) {
+            if (!state.sharingAvailable) {
+                Text(
+                    "Unavailable in this build. Sharing needs a Firebase project, and this copy of " +
+                        "Curbside was built without one. Everything else works.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            } else if (state.householdId == null) {
                 Text(
                     "Pair a second phone to share parking spots automatically. Locations are " +
                         "encrypted on this device with a key that only your two phones hold.",

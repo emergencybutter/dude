@@ -26,6 +26,8 @@ data class SettingsUiState(
     val carBluetoothName: String? = null,
     val householdId: String? = null,
     val autoShare: Boolean = false,
+    /** False when the build carries no Firebase config; the sharing card says so and offers nothing. */
+    val sharingAvailable: Boolean = false,
     val datasetVersion: String? = null,
     val segmentCount: Int = 0,
     val suspensionSummary: String = "Suspension calendar not loaded yet.",
@@ -44,7 +46,7 @@ class SettingsViewModel @Inject constructor(
     private val curbDao: CurbSegmentDao,
 ) : ViewModel() {
 
-    private val local = MutableStateFlow(SettingsUiState())
+    private val local = MutableStateFlow(SettingsUiState(sharingAvailable = household.isAvailable))
 
     val state: StateFlow<SettingsUiState> = combine(
         settings.carBluetoothName,
@@ -59,7 +61,11 @@ class SettingsViewModel @Inject constructor(
             autoShare = autoShare,
             datasetVersion = version,
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), SettingsUiState())
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+        SettingsUiState(sharingAvailable = household.isAvailable),
+    )
 
     init {
         viewModelScope.launch { refreshDiagnostics() }

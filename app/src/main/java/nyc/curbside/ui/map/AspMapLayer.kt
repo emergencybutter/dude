@@ -113,15 +113,22 @@ object AspMapLayer {
             .withFilter(
                 Expression.match(
                     Expression.get(PROPERTY_STATUS),
-                    Expression.literal(false),
                     *statuses.flatMap { listOf(Expression.literal(it.name), Expression.literal(true)) }
                         .toTypedArray(),
+                    Expression.literal(false),
                 ),
             )
             .also { it.minZoom = MIN_ZOOM }
     }
 
-    /** One `match` from status name to the palette defined alongside the rule engine. */
+    /**
+     * One `match` from status name to the palette defined alongside the rule engine.
+     *
+     * The fallback goes last. `Expression.match(input, default, vararg Stop)` exists and takes the
+     * default second, but its stops are [Expression.Stop]; handing it bare expressions binds the
+     * raw `match(vararg Expression)` instead, which emits its arguments verbatim — putting the
+     * default where the first branch label belongs, and getting the whole property rejected.
+     */
     private fun colorExpression(darkTheme: Boolean): Expression {
         val stops = CurbStatus.entries.flatMap { status ->
             val hex = if (darkTheme) status.darkHex else status.lightHex
@@ -129,8 +136,8 @@ object AspMapLayer {
         }
         return Expression.match(
             Expression.get(PROPERTY_STATUS),
-            Expression.color(Color.parseColor(CurbStatus.UNKNOWN.lightHex)),
             *stops.toTypedArray(),
+            Expression.color(Color.parseColor(CurbStatus.UNKNOWN.lightHex)),
         )
     }
 
@@ -147,10 +154,10 @@ object AspMapLayer {
 
     private fun urgencyWeight(): Expression = Expression.match(
         Expression.get(PROPERTY_STATUS),
-        Expression.literal(CurbStatus.CLEAR.widthDp),
         *CurbStatus.entries
             .flatMap { listOf(Expression.literal(it.name), Expression.literal(it.widthDp)) }
             .toTypedArray(),
+        Expression.literal(CurbStatus.CLEAR.widthDp),
     )
 
     /**
@@ -158,13 +165,16 @@ object AspMapLayer {
      * grows with zoom so the two sides pull apart as you get closer, roughly tracking the apparent
      * width of the roadway.
      */
-    private fun offsetExpression(): Expression = Expression.product(
-        Expression.toNumber(Expression.get(PROPERTY_OFFSET_SIGN)),
-        Expression.interpolate(
+    private fun offsetExpression(): Expression {
+        val side = Expression.toNumber(Expression.get(PROPERTY_OFFSET_SIGN))
+        // `zoom` is only legal as the direct input of a top-level `step` or `interpolate`, so the
+        // interpolate has to be the whole property: the side multiplies each stop's output rather
+        // than the interpolate as a whole. Same curve, legal shape.
+        return Expression.interpolate(
             Expression.linear(),
             Expression.zoom(),
-            Expression.stop(MIN_ZOOM, 1.5f),
-            Expression.stop(18f, 7.0f),
-        ),
-    )
+            Expression.stop(MIN_ZOOM, Expression.product(side, Expression.literal(1.5f))),
+            Expression.stop(18f, Expression.product(side, Expression.literal(7.0f))),
+        )
+    }
 }
