@@ -100,4 +100,14 @@ the parser could not read, which is the work queue for improving it. See
 | `POST_NOTIFICATIONS` | The reminder before cleaning starts |
 | `SCHEDULE_EXACT_ALARM` | The reminder lands on time. Degrades to a ten-minute-early window when not granted |
 
-No permission is requested at launch. Each is asked for at the point it first matters.
+An explanation screen comes first, before Android's own dialogs, and covers the four that
+detection depends on: activity recognition, location, background location and notifications.
+They fail silently — the moment they are needed is the moment you have walked away from the
+phone, so a denial shows up as no pin and no warning rather than as an error. The screen says
+what each one buys and what breaks without it, then hands over to the system prompts. It
+appears once and lives on under Settings -> Review permissions. Bluetooth is asked for where it
+is used, when you pick your car stereo.
+
+`ACCESS_BACKGROUND_LOCATION` is asked for on its own, after foreground location is held, and on
+Android 11+ by sending the user to the settings page: the platform stopped offering "all the
+time" in a dialog, so a request there would come straight back denied.

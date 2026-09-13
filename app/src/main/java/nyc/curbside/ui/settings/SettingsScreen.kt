@@ -38,7 +38,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable
-fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
+fun SettingsScreen(
+    viewModel: SettingsViewModel = hiltViewModel(),
+    onReviewPermissions: () -> Unit = {},
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     Column(
@@ -48,14 +51,18 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        DetectionCard(state, viewModel)
+        DetectionCard(state, viewModel, onReviewPermissions)
         SharingCard(state, viewModel)
         DataCard(state, viewModel)
     }
 }
 
 @Composable
-private fun DetectionCard(state: SettingsUiState, viewModel: SettingsViewModel) {
+private fun DetectionCard(
+    state: SettingsUiState,
+    viewModel: SettingsViewModel,
+    onReviewPermissions: () -> Unit,
+) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("How your car is detected", style = MaterialTheme.typography.titleMedium)
@@ -89,6 +96,8 @@ private fun DetectionCard(state: SettingsUiState, viewModel: SettingsViewModel) 
             )
 
             CarStereoPicker(state, viewModel)
+
+            OutlinedButton(onClick = onReviewPermissions) { Text("Review permissions") }
 
             Text(
                 "None of these keeps GPS running. Curbside asks for a location exactly once per " +

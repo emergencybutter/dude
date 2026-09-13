@@ -20,9 +20,14 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -38,6 +43,8 @@ import nyc.curbside.detect.CarConnectionMonitor
 import nyc.curbside.detect.DriveCoordinator
 import nyc.curbside.ui.home.HomeScreen
 import nyc.curbside.ui.map.MapScreen
+import nyc.curbside.ui.onboarding.PermissionsScreen
+import nyc.curbside.ui.onboarding.PermissionsViewModel
 import nyc.curbside.ui.settings.SettingsScreen
 
 @AndroidEntryPoint
@@ -76,6 +83,25 @@ private enum class Destination(val route: String, val label: String, val icon: I
 
 @Composable
 private fun CurbsideApp() {
+    val permissions: PermissionsViewModel = hiltViewModel()
+    val explained by permissions.explained.collectAsStateWithLifecycle()
+    var reviewing by remember { mutableStateOf(false) }
+
+    // The explanation comes before the app rather than inside it: the four permissions it covers
+    // are the difference between Curbside working and Curbside doing nothing at all, and all four
+    // fail silently, at a moment when nobody is looking at the screen.
+    when {
+        explained == null -> Unit // Still reading the stored flag; one frame at most.
+
+        explained == false || reviewing ->
+            PermissionsScreen(viewModel = permissions, onDone = { reviewing = false })
+
+        else -> CurbsideNav(onReviewPermissions = { reviewing = true })
+    }
+}
+
+@Composable
+private fun CurbsideNav(onReviewPermissions: () -> Unit) {
     val navController = rememberNavController()
     val backStack by navController.currentBackStackEntryAsState()
     val current = backStack?.destination
@@ -107,7 +133,9 @@ private fun CurbsideApp() {
         ) {
             composable(Destination.HOME.route) { HomeScreen(onOpenMap = { navController.navigate(Destination.MAP.route) }) }
             composable(Destination.MAP.route) { MapScreen() }
-            composable(Destination.SETTINGS.route) { SettingsScreen() }
+            composable(Destination.SETTINGS.route) {
+                SettingsScreen(onReviewPermissions = onReviewPermissions)
+            }
         }
     }
 }

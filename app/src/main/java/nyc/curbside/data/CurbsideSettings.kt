@@ -52,6 +52,7 @@ class CurbsideSettings @Inject constructor(
         val ASP_DATASET_VERSION = stringPreferencesKey("asp_dataset_version")
         val SUSPENSIONS_JSON = stringPreferencesKey("suspensions_json")
         val TRANSITIONS_REGISTERED = booleanPreferencesKey("transitions_registered")
+        val PERMISSIONS_EXPLAINED = booleanPreferencesKey("permissions_explained")
     }
 
     val driveState: Flow<DriveState> = context.dataStore.data.map { it.toDriveState() }
@@ -162,6 +163,20 @@ class CurbsideSettings @Inject constructor(
     suspend fun readTransitionsRegistered(): Boolean = context.dataStore.data.first()[Keys.TRANSITIONS_REGISTERED] ?: false
     suspend fun setTransitionsRegistered(registered: Boolean) {
         context.dataStore.edit { it[Keys.TRANSITIONS_REGISTERED] = registered }
+    }
+
+    /**
+     * Whether the user has been through the permissions explanation once.
+     *
+     * Deliberately not "has every permission": someone who read the screen and decided Curbside may
+     * not have their location all the time has answered the question, and asking again on every
+     * launch would be nagging. Settings keeps a way back in.
+     */
+    val permissionsExplained: Flow<Boolean> =
+        context.dataStore.data.map { it[Keys.PERMISSIONS_EXPLAINED] ?: false }
+
+    suspend fun setPermissionsExplained(explained: Boolean) {
+        context.dataStore.edit { it[Keys.PERMISSIONS_EXPLAINED] = explained }
     }
 }
 
