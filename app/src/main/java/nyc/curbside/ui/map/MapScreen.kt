@@ -1,5 +1,11 @@
 package nyc.curbside.ui.map
 
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -20,14 +26,18 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.time.format.DateTimeFormatter
@@ -37,12 +47,27 @@ import nyc.curbside.asp.CurbStatus
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.location.LocationComponentActivationOptions
+import org.maplibre.android.location.engine.LocationEngineDefault
+import org.maplibre.android.location.modes.CameraMode
+import org.maplibre.android.location.modes.RenderMode
+import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 
-/** Downtown Brooklyn, an arbitrary but sane starting view when there is no car and no GPS yet. */
+/** Downtown Brooklyn, the fallback when location is refused or has not arrived yet. */
 private val DEFAULT_CENTER = LatLng(40.6892, -73.9857)
 private const val DEFAULT_ZOOM = 15.5
+
+private val LOCATION_PERMISSIONS = arrayOf(
+    Manifest.permission.ACCESS_FINE_LOCATION,
+    Manifest.permission.ACCESS_COARSE_LOCATION,
+)
+
+private fun hasLocationPermission(context: Context): Boolean =
+    LOCATION_PERMISSIONS.any {
+        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+    }
 
 private val PREVIEW_LABEL: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE h a")
 
@@ -107,6 +132,18 @@ private fun AspMap(
         MapView(context)
     }
 
+    // Foreground location, asked for here rather than at launch: opening a map of where you may
+    // park is the moment showing where you are first makes sense. Refusing it costs the blue dot
+    // and the opening camera position, nothing else — the rules are already on the device.
+    var locationGranted by remember { mutableStateOf(hasLocationPermission(context)) }
+    val permissionRequest = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { locationGranted = it.values.any { granted -> granted } }
+
+    LaunchedEffect(Unit) {
+        if (!locationGranted) permissionRequest.launch(LOCATION_PERMISSIONS)
+    }
+
     DisposableEffect(Unit) {
         mapView.onStart()
         mapView.onResume()
@@ -131,6 +168,8 @@ private fun AspMap(
                     map.setStyle(Style.Builder().fromUri(BuildConfig.MAP_STYLE_URL)) { style ->
                         style.addSource(AspMapLayer.emptySource())
                         AspMapLayer.layers(darkTheme).forEach(style::addLayer)
+
+                        if (locationGranted) showWhereYouAre(map, style, context)
 
                         fun reportViewport() {
                             val bounds = map.projection.visibleRegion.latLngBounds
@@ -157,12 +196,42 @@ private fun AspMap(
                     }
                 }
 
-                map.style
+                // The permission may be granted after the style has already loaded, which is the
+                // usual case: the dialog is answered while the map behind it is drawing.
+                val style = map.style
+                if (style != null && locationGranted && !map.locationComponent.isLocationComponentActivated) {
+                    showWhereYouAre(map, style, context)
+                }
+
+                style
                     ?.getSourceAs<org.maplibre.android.style.sources.GeoJsonSource>(AspMapLayer.SOURCE_ID)
                     ?.setGeoJson(AspMapLayer.toFeatureCollection(curbs))
             }
         },
     )
+}
+
+/**
+ * Turns on the blue dot and points the camera at it.
+ *
+ * [CameraMode.TRACKING] follows the location until the user pans, at which point MapLibre drops
+ * back to [CameraMode.NONE] and leaves the map where they put it. The subscription lives exactly as
+ * long as the map is on screen: [MapView.onStop] ends it, so this costs nothing between visits and
+ * nothing at all when the map is closed. It is unrelated to the once-per-drive fix that finds the
+ * car, which does not need the map to be open.
+ */
+@SuppressLint("MissingPermission") // Only called behind hasLocationPermission.
+private fun showWhereYouAre(map: MapLibreMap, style: Style, context: Context) {
+    map.locationComponent.apply {
+        activateLocationComponent(
+            LocationComponentActivationOptions.builder(context, style)
+                .locationEngine(LocationEngineDefault.getDefaultLocationEngine(context))
+                .build(),
+        )
+        isLocationComponentEnabled = true
+        renderMode = RenderMode.COMPASS
+        cameraMode = CameraMode.TRACKING
+    }
 }
 
 /**
