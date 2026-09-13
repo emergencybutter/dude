@@ -109,6 +109,38 @@ class SignParserTest(unittest.TestCase):
         self.assertEqual([], parse_sign("   "))
 
 
+class OvernightWindowTest(unittest.TestCase):
+    """Mirrors the overnight cases in SignParserTest.kt; the two parsers must agree."""
+
+    def test_an_overnight_window_becomes_two_one_either_side_of_midnight(self):
+        parsed = parse_sign("MOON & STARS (SYMBOLS) NO STANDING 10PM-5AM ALL DAYS <->")
+
+        self.assertEqual(2, len(parsed))
+        evening, morning = parsed
+        self.assertEqual("NO_STANDING", evening.kind)
+        self.assertEqual((22 * 60, END_OF_DAY), (evening.start_minute, evening.end_minute))
+        self.assertEqual((0, 5 * 60), (morning.start_minute, morning.end_minute))
+        # Not a rule with no window: that is what the engine reads as restricted around the clock.
+        self.assertTrue(all(r.start_minute is not None for r in parsed))
+
+    def test_the_morning_half_lands_on_the_next_day(self):
+        parsed = parse_sign("NO PARKING 10PM-4AM MON THURS")
+
+        self.assertEqual(frozenset({MON, THU}), parsed[0].days)
+        self.assertEqual(frozenset({TUE, FRI}), parsed[1].days)
+
+    def test_a_borrowed_meridiem_that_only_looks_overnight_is_still_morning(self):
+        parsed = parse_sign("NO PARKING (SANITATION BROOM SYMBOL) 11-12:30PM WED")
+
+        self.assertEqual((11 * 60, 12 * 60 + 30), (parsed[0].start_minute, parsed[0].end_minute))
+
+    def test_all_days_is_the_whole_week_stated_rather_than_inferred(self):
+        parsed = parse_sign("NO STANDING 8AM-6PM ALL DAYS")
+
+        self.assertEqual(ALL_DAYS, parsed[0].days)
+        self.assertFalse(parsed[0].days_inferred)
+
+
 class DtoTest(unittest.TestCase):
     def test_day_bitmask_matches_the_kotlin_convention(self):
         # Bit 0 is Monday, matching DayOfWeek.getValue() - 1 on the app side.

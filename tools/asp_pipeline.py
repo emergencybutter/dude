@@ -151,7 +151,17 @@ def parse_endpoint(token: str, assumed_pm: bool | None) -> int | None:
     return hour24 * 60 + minute
 
 
+def has_meridiem(token: str) -> bool:
+    """True when the endpoint states its own half of the day rather than borrowing one."""
+    token = token.strip()
+    if token in ("MIDNIGHT", "NOON"):
+        return True
+    match = ENDPOINT_PARTS.match(token)
+    return bool(match and match.group(3))
+
+
 def parse_window(clause: str) -> tuple[int, int] | None:
+    """The window as written. ``start > end`` means it runs past midnight; see parse_sign."""
     match = RANGE.search(clause)
     if not match:
         return None
@@ -169,7 +179,11 @@ def parse_window(clause: str) -> tuple[int, int] | None:
     if left is None:
         return None
     if left >= right:
-        # Borrowing PM wrapped the window; the sign meant the morning.
+        # Two different things look identical here. "10PM-4AM" says PM outright and means a real
+        # overnight window. "11-12:30PM" borrowed the right endpoint's PM and only looks like one;
+        # the sign meant 11 in the morning. The sign's own meridiem decides which.
+        if has_meridiem(left_raw):
+            return left, right
         left = parse_endpoint(left_raw, assumed_pm=False)
     if left is None or left >= right:
         return None
@@ -198,8 +212,13 @@ def single_day(token: str) -> int | None:
     return None
 
 
+def next_day(days: frozenset[int]) -> frozenset[int]:
+    """The days an overnight window spills into: Monday 10PM-4AM restricts Tuesday morning."""
+    return frozenset((day + 1) % 7 for day in days)
+
+
 def parse_days(clause: str) -> frozenset[int] | None:
-    if "INCLUDING" in clause:
+    if "INCLUDING" in clause or "ALL DAYS" in clause:
         return ALL_DAYS
 
     except_match = re.search(r"\bEXCEPT\b(.*)$", clause)
@@ -260,6 +279,19 @@ def parse_sign(description: str) -> list[Regulation]:
             out.append(Regulation("OTHER", frozenset(), None, None, description))
             continue
 
+        inferred = explicit is None
+
+        # A window that runs past midnight becomes two, because a schedule is keyed by weekday and
+        # "10PM Monday" and "4AM Tuesday" are different days. Left whole, the pair would either be
+        # dropped or — worse, and what this used to do — collapse to a rule with no window at all,
+        # which the engine reads as restricted around the clock. A seven-hour overnight ban is not
+        # a permanent one.
+        if window and window[0] > window[1]:
+            out.append(Regulation(kind, days, window[0], END_OF_DAY, description, inferred))
+            if window[1] > 0:
+                out.append(Regulation(kind, next_day(days), 0, window[1], description, inferred))
+            continue
+
         out.append(
             Regulation(
                 kind=kind,
@@ -267,7 +299,7 @@ def parse_sign(description: str) -> list[Regulation]:
                 start_minute=window[0] if window else None,
                 end_minute=window[1] if window else None,
                 raw=description,
-                days_inferred=explicit is None,
+                days_inferred=inferred,
             )
         )
     return out

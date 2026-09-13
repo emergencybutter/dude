@@ -69,7 +69,7 @@ object SignParser {
         if (normalized.isEmpty()) return emptyList()
         return normalized.split(CLAUSE_SPLIT)
             .filter { it.isNotBlank() }
-            .map { parseClause(it, description) }
+            .flatMap { parseClause(it, description) }
     }
 
     private fun normalize(raw: String): String =
@@ -79,31 +79,53 @@ object SignParser {
             .replace(Regex("""[ \t]+"""), " ")
             .trim()
 
-    private fun parseClause(clause: String, rawSign: String): Regulation {
+    private fun parseClause(clause: String, rawSign: String): List<Regulation> {
         val kind = classify(clause)
-        val window = parseWindow(clause)
+        val range = parseRange(clause)
         val anytime = clause.contains("ANYTIME") || clause.contains("ALL TIMES")
 
         // "ANYTIME" beats everything: the rule is in force 24/7 regardless of any stray digits.
         if (anytime) {
-            return Regulation(kind, ALL_DAYS, window = null, raw = rawSign, daysInferred = true)
+            return listOf(Regulation(kind, ALL_DAYS, window = null, raw = rawSign, daysInferred = true))
         }
 
         val explicit = parseDays(clause)
-        val days = explicit ?: if (window != null || kind != RegulationKind.OTHER) ALL_DAYS else emptySet()
+        val days = explicit ?: if (range != null || kind != RegulationKind.OTHER) ALL_DAYS else emptySet()
 
         // A timed rule we could not read at all is worse than useless — surface it as OTHER so the
         // UI shows "unknown rules" instead of inventing a schedule.
         if (days.isEmpty()) {
-            return Regulation(RegulationKind.OTHER, emptySet(), null, rawSign, daysInferred = false)
+            return listOf(Regulation(RegulationKind.OTHER, emptySet(), null, rawSign, daysInferred = false))
         }
 
-        return Regulation(
-            kind = kind,
-            days = days,
-            window = window,
-            raw = rawSign,
-            daysInferred = explicit == null,
+        val inferred = explicit == null
+
+        // A window that runs past midnight becomes two, because a schedule is keyed by weekday and
+        // "10PM Monday" and "4AM Tuesday" are different days. [TimeWindow] refuses to wrap for the
+        // same reason. Left whole, the pair would either be dropped or — worse, and what this used
+        // to do — collapse to a rule with no window at all, which the engine reads as restricted
+        // around the clock. A seven-hour overnight ban is not a permanent one.
+        if (range != null && range.first >= range.second) {
+            val evening = Regulation(kind, days, TimeWindow(range.first, END_OF_DAY), rawSign, inferred)
+            if (range.second == LocalTime.MIDNIGHT) return listOf(evening)
+            val morning = Regulation(
+                kind,
+                days.map { it.plus(1) }.toSet(),
+                TimeWindow(LocalTime.MIDNIGHT, range.second),
+                rawSign,
+                inferred,
+            )
+            return listOf(evening, morning)
+        }
+
+        return listOf(
+            Regulation(
+                kind = kind,
+                days = days,
+                window = range?.let { TimeWindow(it.first, it.second) },
+                raw = rawSign,
+                daysInferred = inferred,
+            ),
         )
     }
 
@@ -117,8 +139,11 @@ object SignParser {
         else -> RegulationKind.OTHER
     }
 
-    /** Reads the first `H:MM-H:MM` style range in the clause, resolving implied am/pm. */
-    internal fun parseWindow(clause: String): TimeWindow? {
+    /**
+     * Reads the first `H:MM-H:MM` style range in the clause, resolving implied am/pm. The window as
+     * written: a start at or after the end means it runs past midnight.
+     */
+    internal fun parseRange(clause: String): Pair<LocalTime, LocalTime>? {
         val match = RANGE.find(clause) ?: return null
         val (leftRaw, rightRaw) = match.destructured
 
@@ -132,13 +157,24 @@ object SignParser {
         val rightMeridiemPm = right.hour >= 12
         var left = parseEndpoint(leftRaw, assumed = rightMeridiemPm) ?: return null
 
-        // "11-12:30PM" borrows PM and becomes 23:00-12:30, which wraps. The sign meant 11AM.
         if (left >= right) {
+            // Two different things look identical here. "10PM-4AM" says PM outright and means a
+            // real overnight window. "11-12:30PM" borrowed the right endpoint's PM and only looks
+            // like one; the sign meant 11 in the morning. The sign's own meridiem decides which.
+            if (hasMeridiem(leftRaw)) return left to right
             left = parseEndpoint(leftRaw, assumed = false) ?: return null
         }
         if (left >= right) return null
 
-        return TimeWindow(left, right)
+        return left to right
+    }
+
+    /** True when the endpoint states its own half of the day rather than borrowing one. */
+    private fun hasMeridiem(raw: String): Boolean {
+        val token = raw.trim()
+        if (token == "MIDNIGHT" || token == "NOON") return true
+        val m = ENDPOINT_PARTS.matchEntire(token) ?: return false
+        return m.groupValues[3].isNotEmpty()
     }
 
     /**
@@ -175,7 +211,8 @@ object SignParser {
     /** Returns null when the clause names no weekdays at all, versus an empty set for "no days". */
     internal fun parseDays(clause: String): Set<DayOfWeek>? {
         // "INCLUDING SUNDAY" is an emphasis, not a restriction: the rule runs the whole week.
-        if (clause.contains("INCLUDING")) return ALL_DAYS
+        // "ALL DAYS" is the DOT's own phrasing for the same thing, and standard on overnight signs.
+        if (clause.contains("INCLUDING") || clause.contains("ALL DAYS")) return ALL_DAYS
 
         // "EXCEPT SUNDAY" inverts: everything the clause did not exclude.
         EXCEPT.find(clause)?.let { except ->

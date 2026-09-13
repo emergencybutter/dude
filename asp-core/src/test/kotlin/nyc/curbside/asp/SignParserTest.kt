@@ -20,6 +20,42 @@ class SignParserTest {
     }
 
     @Test
+    fun `an overnight window becomes two, one either side of midnight`() {
+        val parsed = SignParser.parse("MOON & STARS (SYMBOLS) NO STANDING 10PM-5AM ALL DAYS <->")
+
+        assertEquals(2, parsed.size)
+        val (evening, morning) = parsed
+        assertEquals(RegulationKind.NO_STANDING, evening.kind)
+        assertEquals(TimeWindow(LocalTime.of(22, 0), SignParser.END_OF_DAY), evening.window)
+        assertEquals(TimeWindow(LocalTime.MIDNIGHT, LocalTime.of(5, 0)), morning.window)
+        // Not a rule with no window: that is what the engine reads as restricted around the clock.
+        assertTrue(parsed.all { it.window != null })
+    }
+
+    @Test
+    fun `the morning half of an overnight window lands on the next day`() {
+        val parsed = SignParser.parse("NO PARKING 10PM-4AM MON THURS")
+
+        assertEquals(setOf(DayOfWeek.MONDAY, DayOfWeek.THURSDAY), parsed[0].days)
+        assertEquals(setOf(DayOfWeek.TUESDAY, DayOfWeek.FRIDAY), parsed[1].days)
+    }
+
+    @Test
+    fun `a borrowed meridiem that only looks overnight is still read as morning`() {
+        val r = one("NO PARKING (SANITATION BROOM SYMBOL) 11-12:30PM WED")
+
+        assertEquals(TimeWindow(LocalTime.of(11, 0), LocalTime.of(12, 30)), r.window)
+    }
+
+    @Test
+    fun `all days is the whole week, stated rather than inferred`() {
+        val parsed = SignParser.parse("NO STANDING 8AM-6PM ALL DAYS")
+
+        assertEquals(DayOfWeek.entries.toSet(), parsed.single().days)
+        assertTrue(!parsed.single().daysInferred)
+    }
+
+    @Test
     fun `reads a two-day sweeping sign`() {
         val r = one("NO PARKING (SANITATION BROOM SYMBOL) 11:30AM-1PM TUES & FRI")
 
