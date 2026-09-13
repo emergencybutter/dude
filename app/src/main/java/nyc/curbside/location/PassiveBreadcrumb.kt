@@ -98,7 +98,6 @@ class BreadcrumbReceiver : BroadcastReceiver() {
     @Inject @ApplicationScope lateinit var scope: CoroutineScope
 
     override fun onReceive(context: Context, intent: Intent) {
-        super.onReceive(context, intent)
         val location = LocationResult.extractResult(intent)?.lastLocation ?: return
         val pending = goAsync()
         scope.launch {

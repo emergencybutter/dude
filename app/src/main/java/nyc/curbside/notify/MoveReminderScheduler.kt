@@ -87,7 +87,6 @@ class MoveReminderReceiver : BroadcastReceiver() {
     @Inject @ApplicationScope lateinit var scope: CoroutineScope
 
     override fun onReceive(context: Context, intent: Intent) {
-        super.onReceive(context, intent)
         val eventId = intent.getStringExtra(EXTRA_EVENT_ID) ?: return
         val pending = goAsync()
         scope.launch {

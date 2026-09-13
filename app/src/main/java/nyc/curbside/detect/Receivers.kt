@@ -51,9 +51,8 @@ class ActivityTransitionReceiver : CoroutineBroadcastReceiver() {
     @Inject lateinit var coordinator: DriveCoordinator
 
     override fun onReceive(context: Context, intent: Intent) {
-        // Hilt performs field injection inside its generated onReceive; skipping this leaves every
-        // injected field uninitialised.
-        super.onReceive(context, intent)
+        // No super.onReceive: BroadcastReceiver.onReceive is abstract, and Hilt's Gradle plugin
+        // rewrites this method to call its generated inject(context) before the first statement.
         if (!ActivityTransitionResult.hasResult(intent)) return
         val result = ActivityTransitionResult.extractResult(intent) ?: return
 
@@ -98,7 +97,6 @@ class CarBluetoothReceiver : CoroutineBroadcastReceiver() {
     @Inject lateinit var settings: nyc.curbside.data.CurbsideSettings
 
     override fun onReceive(context: Context, intent: Intent) {
-        super.onReceive(context, intent)
         val kind = when (intent.action) {
             BluetoothDevice.ACTION_ACL_CONNECTED -> SignalKind.DRIVE_STARTED
             BluetoothDevice.ACTION_ACL_DISCONNECTED -> SignalKind.DRIVE_ENDED
@@ -123,7 +121,6 @@ class ParkCheckAlarmReceiver : CoroutineBroadcastReceiver() {
     @Inject lateinit var coordinator: DriveCoordinator
 
     override fun onReceive(context: Context, intent: Intent) {
-        super.onReceive(context, intent)
         goAsyncIn { coordinator.onParkCheckDue() }
     }
 }
@@ -140,7 +137,6 @@ class BootReceiver : CoroutineBroadcastReceiver() {
     @Inject lateinit var coordinator: DriveCoordinator
 
     override fun onReceive(context: Context, intent: Intent) {
-        super.onReceive(context, intent)
         goAsyncIn {
             registrar.ensureRegistered()
             coordinator.reconcile()
