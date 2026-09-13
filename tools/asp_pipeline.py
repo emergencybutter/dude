@@ -310,6 +310,10 @@ def parse_sign(description: str) -> list[Regulation]:
 # ---------------------------------------------------------------------------
 
 EARTH_RADIUS_M = 6_371_008.8
+
+# How far a sign may stand from the centreline it is assigned to. Wide enough for a boulevard and a
+# few metres of survey error, narrow enough that a same-named street in another borough never wins.
+MAX_SIGN_TO_CURB_M = 250.0
 METERS_PER_DEGREE_LAT = math.pi * EARTH_RADIUS_M / 180.0
 
 
@@ -359,6 +363,67 @@ def side_sign(points: Sequence[tuple[float, float]], side: str) -> int:
     if abs(cross) < 1e-9:
         return 0
     return -1 if cross > 0 else 1
+
+
+# The sign inventory positions every sign in NY State Plane Long Island (EPSG:2263), US survey
+# feet. Converting is a Lambert Conformal Conic inverse, which is a page of arithmetic and avoids
+# making pyproj a dependency of a script that otherwise needs nothing but the standard library.
+_GRS80_A = 6_378_137.0
+_GRS80_E = math.sqrt(2 * (1 / 298.257222101) - (1 / 298.257222101) ** 2)
+_US_FOOT = 1200.0 / 3937.0
+_LCC_LAT0 = math.radians(40 + 10 / 60.0)
+_LCC_LON0 = math.radians(-74.0)
+_LCC_SP1 = math.radians(41 + 2 / 60.0)
+_LCC_SP2 = math.radians(40 + 40 / 60.0)
+_LCC_FALSE_EASTING_M = 300_000.0
+
+
+def _lcc_m(lat: float) -> float:
+    return math.cos(lat) / math.sqrt(1 - _GRS80_E**2 * math.sin(lat) ** 2)
+
+
+def _lcc_t(lat: float) -> float:
+    sin_lat = _GRS80_E * math.sin(lat)
+    return math.tan(math.pi / 4 - lat / 2) / ((1 - sin_lat) / (1 + sin_lat)) ** (_GRS80_E / 2)
+
+
+_LCC_N = (math.log(_lcc_m(_LCC_SP1)) - math.log(_lcc_m(_LCC_SP2))) / (
+    math.log(_lcc_t(_LCC_SP1)) - math.log(_lcc_t(_LCC_SP2))
+)
+_LCC_F = _lcc_m(_LCC_SP1) / (_LCC_N * _lcc_t(_LCC_SP1) ** _LCC_N)
+_LCC_RF = _GRS80_A * _LCC_F * _lcc_t(_LCC_LAT0) ** _LCC_N
+
+
+def state_plane_to_wgs84(x_feet: float, y_feet: float) -> tuple[float, float]:
+    """EPSG:2263 to (lat, lon). Accurate to a few metres, which is far finer than a city block."""
+    x = x_feet * _US_FOOT - _LCC_FALSE_EASTING_M
+    y = y_feet * _US_FOOT
+    radius = math.copysign(math.hypot(x, _LCC_RF - y), _LCC_N)
+    t = (radius / (_GRS80_A * _LCC_F)) ** (1 / _LCC_N)
+    lon = math.atan2(x, _LCC_RF - y) / _LCC_N + _LCC_LON0
+
+    lat = math.pi / 2 - 2 * math.atan(t)
+    for _ in range(12):
+        sin_lat = _GRS80_E * math.sin(lat)
+        lat = math.pi / 2 - 2 * math.atan(t * ((1 - sin_lat) / (1 + sin_lat)) ** (_GRS80_E / 2))
+    return math.degrees(lat), math.degrees(lon)
+
+
+def distance_to_polyline(point: tuple[float, float], points: Sequence[tuple[float, float]]) -> float:
+    """Metres from a point to the nearest place on a polyline, flat-earth over a few hundred."""
+    lat, lon = point
+    scale = math.cos(math.radians(lat))
+    px, py = lon * scale, lat
+    best = float("inf")
+    for (alat, alon), (blat, blon) in zip(points, points[1:]):
+        ax, ay = alon * scale, alat
+        bx, by = blon * scale, blat
+        dx, dy = bx - ax, by - ay
+        span = dx * dx + dy * dy
+        t = 0.0 if span == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / span))
+        ddx, ddy = px - (ax + t * dx), py - (ay + t * dy)
+        best = min(best, math.hypot(ddx, ddy))
+    return best * METERS_PER_DEGREE_LAT
 
 
 def bbox(points: Sequence[tuple[float, float]]) -> list[float]:
@@ -426,6 +491,8 @@ class SegmentBuild:
     side: str
     regulations: list[Regulation] = field(default_factory=list)
     geometry: list[tuple[float, float]] = field(default_factory=list)
+    #: Where this curb's signs physically stand, in WGS84. Picks the block out of the street.
+    positions: list[tuple[float, float]] = field(default_factory=list)
 
 
 # The two datasets spell the same street differently: the sign inventory writes "STERLING STREET"
@@ -466,8 +533,38 @@ def segment_key(on: str, frm: str, to: str, side: str) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def nearest_segment(
+    candidates: Sequence[Sequence[tuple[float, float]]],
+    positions: Sequence[tuple[float, float]],
+) -> list[tuple[float, float]] | None:
+    """The candidate block nearest the signs, or None when the signs cannot say which.
+
+    A street name alone cannot pick a block, so the signs' own coordinates do it. With no position
+    to go on the curb is dropped rather than pinned to an arbitrary block of the right name, which
+    is what used to happen: a rule drawn on the wrong street is worse than one not drawn at all.
+    """
+    if not positions:
+        return None
+
+    centre = (
+        sum(lat for lat, _ in positions) / len(positions),
+        sum(lon for _, lon in positions) / len(positions),
+    )
+    best, best_distance = None, float("inf")
+    for points in candidates:
+        distance = distance_to_polyline(centre, points)
+        if distance < best_distance:
+            best, best_distance = points, distance
+
+    # Beyond a couple of blocks the match is a coincidence of naming, not the same street.
+    return list(best) if best is not None and best_distance <= MAX_SIGN_TO_CURB_M else None
+
+
 def build_segments(signs: Iterable[dict], centerlines: Iterable[dict], report_unparsed: bool) -> tuple[list[dict], dict]:
-    geometry_by_block: dict[str, list[tuple[float, float]]] = {}
+    # Every segment of a street, not one: "PRESIDENT ST" is fifty-odd blocks spread across three
+    # boroughs, and which of them a curb belongs to is decided below by where its signs actually
+    # stand. Keeping only the first match put every President Street in the city on one block of it.
+    geometry_by_street: dict[str, list[list[tuple[float, float]]]] = defaultdict(list)
     for row in centerlines:
         geom = row.get("the_geom") or {}
         if geom.get("type") != "MultiLineString":
@@ -477,12 +574,13 @@ def build_segments(signs: Iterable[dict], centerlines: Iterable[dict], report_un
             continue
         # Socrata gives GeoJSON order (lon, lat); everything downstream wants (lat, lon).
         points = [(float(lat), float(lon)) for lon, lat in parts[0]]
-        key = normalize_street(row.get("stname_label", ""))
-        geometry_by_block.setdefault(key, points)
+        if len(points) < 2:
+            continue
+        geometry_by_street[normalize_street(row.get("stname_label", ""))].append(points)
 
     builds: dict[str, SegmentBuild] = {}
     unparsed: dict[str, int] = defaultdict(int)
-    stats = {"signs": 0, "signs_parsed": 0, "segments": 0, "no_geometry": 0}
+    stats = {"signs": 0, "signs_parsed": 0, "segments": 0, "no_geometry": 0, "no_position": 0}
 
     for row in signs:
         stats["signs"] += 1
@@ -508,11 +606,23 @@ def build_segments(signs: Iterable[dict], centerlines: Iterable[dict], report_un
             if regulation not in build.regulations:
                 build.regulations.append(regulation)
 
+        x, y = row.get("sign_x_coord"), row.get("sign_y_coord")
+        if x and y:
+            try:
+                build.positions.append(state_plane_to_wgs84(float(x), float(y)))
+            except (TypeError, ValueError):
+                pass
+
     out: list[dict] = []
     for key, build in builds.items():
-        points = geometry_by_block.get(normalize_street(build.on_street))
-        if not points or len(points) < 2:
+        candidates = geometry_by_street.get(normalize_street(build.on_street))
+        if not candidates:
             stats["no_geometry"] += 1
+            continue
+
+        points = nearest_segment(candidates, build.positions)
+        if points is None:
+            stats["no_position"] += 1
             continue
 
         out.append(
@@ -593,7 +703,7 @@ def main(argv: Sequence[str]) -> int:
     signs = load_rows(
         args.signs,
         SIGNS_DATASET,
-        "sign_description,on_street,from_street,to_street,side_of_street,borough",
+        "sign_description,on_street,from_street,to_street,side_of_street,borough,sign_x_coord,sign_y_coord",
         where,
         args.limit,
     )
@@ -609,7 +719,8 @@ def main(argv: Sequence[str]) -> int:
     parsed_pct = 100.0 * stats["signs_parsed"] / stats["signs"] if stats["signs"] else 0.0
     print(
         f"\nParsed {stats['signs_parsed']}/{stats['signs']} signs ({parsed_pct:.1f}%), "
-        f"{stats['segments']} curbs written, {stats['no_geometry']} dropped for want of geometry.",
+        f"{stats['segments']} curbs written, {stats['no_geometry']} with no street geometry, """
+        f"{stats['no_position']} with no usable sign position.",
         file=sys.stderr,
     )
     print(f"Wrote {args.out}/{manifest['path']} (version {manifest['version']}).", file=sys.stderr)

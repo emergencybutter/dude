@@ -17,8 +17,11 @@ from asp_pipeline import (
     END_OF_DAY,
     Regulation,
     bbox,
+    distance_to_polyline,
     encode_polyline,
+    nearest_segment,
     normalize_street,
+    state_plane_to_wgs84,
     parse_sign,
     segment_key,
     side_sign,
@@ -139,6 +142,42 @@ class OvernightWindowTest(unittest.TestCase):
 
         self.assertEqual(ALL_DAYS, parsed[0].days)
         self.assertFalse(parsed[0].days_inferred)
+
+
+class GeometryJoinTest(unittest.TestCase):
+    """Picking the right block of a street out of the fifty that share its name."""
+
+    # Two real blocks of President Street: Park Slope, and Crown Heights two miles east.
+    PARK_SLOPE = [(40.6738, -73.9840), (40.6730, -73.9800)]
+    CROWN_HEIGHTS = [(40.6671, -73.9340), (40.6669, -73.9300)]
+
+    def test_state_plane_converts_to_the_right_corner_of_brooklyn(self):
+        lat, lon = state_plane_to_wgs84(1002948, 182343)  # President St at Utica Av
+
+        self.assertAlmostEqual(40.667, lat, places=2)
+        self.assertAlmostEqual(-73.933, lon, places=2)
+
+    def test_the_block_nearest_the_signs_wins(self):
+        signs = [state_plane_to_wgs84(1002948, 182343)]
+
+        chosen = nearest_segment([self.PARK_SLOPE, self.CROWN_HEIGHTS], signs)
+
+        self.assertEqual(self.CROWN_HEIGHTS, chosen)
+
+    def test_a_curb_with_no_sign_positions_is_dropped_not_guessed(self):
+        self.assertIsNone(nearest_segment([self.PARK_SLOPE, self.CROWN_HEIGHTS], []))
+
+    def test_a_street_of_the_same_name_far_away_is_not_a_match(self):
+        staten_island = [state_plane_to_wgs84(960000, 150000)]
+
+        self.assertIsNone(nearest_segment([self.PARK_SLOPE], staten_island))
+
+    def test_distance_to_a_polyline_is_measured_in_metres(self):
+        # A due-east line, and a point 0.001 degrees of latitude north of it: one minute of arc is
+        # about 111 m, and the perpendicular is unambiguous because the line does not slope.
+        due_east = [(40.6700, -73.9900), (40.6700, -73.9800)]
+
+        self.assertAlmostEqual(111.0, distance_to_polyline((40.6710, -73.9850), due_east), delta=3.0)
 
 
 class DtoTest(unittest.TestCase):
