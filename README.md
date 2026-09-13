@@ -19,18 +19,25 @@ Read [`DESIGN.md`](DESIGN.md) for the architecture and the reasoning. Subsystem 
 
 ## Status
 
-**Design and implementation, unbuilt.** The two pure-Kotlin modules are written and tested; the
-Android module is written but has never been compiled, because the environment this was built in has
-no Android SDK. Expect to fix import and API-surface details on the first real build. Nothing here
-has run on a phone.
+**It compiles. It has not run.** All four parts build and their tests pass, and `:app` packages a
+debug APK. That is the whole of the claim: a green `assembleDebug` says the code compiles and
+packages, not that a drive is detected, a reminder fires, or a map draws. Nothing here has been on a
+phone.
 
 | Part | State |
 | --- | --- |
-| `:asp-core` — sign parsing, schedule engine, geometry, curb matching | Written, **49 tests passing** |
-| `:drive-core` — drive/park state machine | Written, **16 tests passing** |
-| `tools/asp_pipeline.py` — offline data pipeline | Written, **24 tests passing** |
-| `:app` — detection, storage, map, UI, sharing | Written, **not compiled** |
-| Library versions in `gradle/libs.versions.toml` | Plausible but unverified; Google's Maven was unreachable. Refresh before the first build |
+| `:asp-core` — sign parsing, schedule engine, geometry, curb matching | **49 tests passing** |
+| `:drive-core` — drive/park state machine | **16 tests passing** |
+| `tools/asp_pipeline.py` — offline data pipeline | **24 tests passing** |
+| `:app` — detection, storage, map, UI, sharing | **Debug APK builds.** No unit tests of its own |
+| Library versions in `gradle/libs.versions.toml` | Verified — every one resolved as written |
+
+The first real build needed two fixes, both mechanical: the `@AndroidEntryPoint` receivers called
+`super.onReceive`, which Kotlin rejects because `BroadcastReceiver.onReceive` is abstract (Hilt's
+Gradle plugin splices the injection call in at bytecode level, so the call was never needed), and
+three files used the reified `Json.encodeToString(value)` without importing it, so the call bound to
+the two-arg overload instead. What has *not* been checked is everything a compiler cannot see: the
+runtime behaviour of the detection wiring, the Room schema against a real database, the map.
 
 ## Layout
 
@@ -48,11 +55,12 @@ an emulator. That is where 65 of the 89 tests live.
 
 ## Building
 
-Requires the Android SDK (compileSdk 35) and JDK 17.
+Requires JDK 17 and the Android SDK — `platforms;android-35` and `build-tools;35.0.0`. Point
+`sdk.dir` in `local.properties` at it, or set `ANDROID_HOME`.
 
 ```bash
 ./gradlew :asp-core:test :drive-core:test    # the logic, no SDK needed
-./gradlew :app:assembleDebug
+./gradlew :app:assembleDebug                 # -> app/build/outputs/apk/debug/app-debug.apk
 python3 tools/test_asp_pipeline.py
 ```
 
