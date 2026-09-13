@@ -16,6 +16,19 @@ data class EvaluatedCurb(
 )
 
 /**
+ * Everything the curb detail sheet shows for one tapped curb.
+ *
+ * [at] is carried along because the map asks about scrubbed times as well as the present, and a
+ * sheet that computed "for how long" against a fresher clock than the one that produced
+ * [allowance] would drift from the answer it is displaying.
+ */
+data class CurbDetail(
+    val curb: EvaluatedCurb,
+    val allowance: ParkingAllowance,
+    val at: ZonedDateTime,
+)
+
+/**
  * Reads curb data out of the local database and grades it.
  *
  * There is no network in this class. The whole sign dataset is installed once by
@@ -71,10 +84,26 @@ class AspRepository @Inject constructor(
     }
 
     suspend fun curbById(id: String, now: ZonedDateTime = ZonedDateTime.now(NYC)): EvaluatedCurb? =
+        curbDetail(id, now)?.curb
+
+    /**
+     * One curb, graded and with its next free span worked out: what the map's detail sheet needs
+     * from a tap.
+     *
+     * Reads through the database rather than the viewport the tap came from, so the sheet survives
+     * the user panning the curb off screen.
+     */
+    suspend fun curbDetail(id: String, now: ZonedDateTime = ZonedDateTime.now(NYC)): CurbDetail? =
         withContext(Dispatchers.IO) {
             val entity = dao.byId(id) ?: return@withContext null
+            val calendar = suspensions.current()
             val located = entity.toLocatedCurb()
-            EvaluatedCurb(located, SweepSchedule.evaluate(located.segment.regulations, now, suspensions.current()))
+            val regulations = located.segment.regulations
+            CurbDetail(
+                curb = EvaluatedCurb(located, SweepSchedule.evaluate(regulations, now, calendar)),
+                allowance = ParkingWindow.allowance(regulations, now, calendar),
+                at = now,
+            )
         }
 
     suspend fun isInstalled(): Boolean = withContext(Dispatchers.IO) { dao.count() > 0 }

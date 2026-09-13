@@ -30,6 +30,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,6 +44,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.time.format.DateTimeFormatter
 import nyc.curbside.BuildConfig
 import nyc.curbside.asp.BoundingBox
+import nyc.curbside.asp.CurbMatcher
 import nyc.curbside.asp.CurbStatus
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
@@ -71,6 +73,12 @@ private fun hasLocationPermission(context: Context): Boolean =
 
 private val PREVIEW_LABEL: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE h a")
 
+/** Roughly a fingertip. Curb lines are a few pixels wide, so the hit area has to be generous. */
+private const val TAP_RADIUS_PIXELS = 22.0
+
+/** Zoomed all the way in, a fingertip covers less than a lane; do not let the target shrink below this. */
+private const val MIN_TAP_METERS = 6.0
+
 @Composable
 fun MapScreen(viewModel: MapViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -79,8 +87,10 @@ fun MapScreen(viewModel: MapViewModel = hiltViewModel()) {
     Box(Modifier.fillMaxSize()) {
         AspMap(
             curbs = state.curbs,
+            selectedId = state.selectedId,
             darkTheme = darkTheme,
             onViewportChanged = viewModel::onViewportChanged,
+            onTap = viewModel::onMapTapped,
         )
 
         Column(
@@ -99,7 +109,12 @@ fun MapScreen(viewModel: MapViewModel = hiltViewModel()) {
                     PREVIEW_LABEL.format(state.previewedAt)
                 },
             )
-            Legend()
+            val selected = state.selected
+            if (selected == null) {
+                Legend()
+            } else {
+                CurbDetailCard(selected, onDismiss = viewModel::clearSelection)
+            }
         }
 
         if (!state.datasetInstalled) {
@@ -123,10 +138,16 @@ fun MapScreen(viewModel: MapViewModel = hiltViewModel()) {
 @Composable
 private fun AspMap(
     curbs: List<nyc.curbside.asp.EvaluatedCurb>,
+    selectedId: String?,
     darkTheme: Boolean,
     onViewportChanged: (BoundingBox) -> Unit,
+    onTap: (point: nyc.curbside.asp.LatLng, toleranceMeters: Double) -> Unit,
 ) {
     val context = LocalContext.current
+
+    // The click listener is registered once, against the map, and outlives every recomposition;
+    // capturing the lambda directly would pin the first one forever.
+    val currentOnTap by rememberUpdatedState(onTap)
     val mapView = remember {
         MapLibre.getInstance(context)
         MapView(context)
@@ -188,6 +209,20 @@ private fun AspMap(
                         // digit frames per second for no benefit.
                         map.addOnCameraIdleListener(::reportViewport)
 
+                        // How far from a curb still counts as tapping it. Derived from the zoom so
+                        // it stays roughly a fingertip on screen rather than a fixed distance on
+                        // the ground, which would be untappable when zoomed out and greedy when in.
+                        map.addOnMapClickListener { tapped ->
+                            val metersPerPixel = map.projection
+                                .getMetersPerPixelAtLatitude(tapped.latitude)
+                            currentOnTap(
+                                nyc.curbside.asp.LatLng(tapped.latitude, tapped.longitude),
+                                (metersPerPixel * TAP_RADIUS_PIXELS)
+                                    .coerceIn(MIN_TAP_METERS, CurbMatcher.MAX_MATCH_METERS),
+                            )
+                            true
+                        }
+
                         // The camera is positioned before the style finishes loading, so it is
                         // already at rest by the time the listener above exists and no idle event
                         // is ever fired for the opening view. Without this the map opens empty and
@@ -205,7 +240,7 @@ private fun AspMap(
 
                 style
                     ?.getSourceAs<org.maplibre.android.style.sources.GeoJsonSource>(AspMapLayer.SOURCE_ID)
-                    ?.setGeoJson(AspMapLayer.toFeatureCollection(curbs))
+                    ?.setGeoJson(AspMapLayer.toFeatureCollection(curbs, selectedId))
             }
         },
     )

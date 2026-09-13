@@ -44,6 +44,7 @@ import nyc.curbside.asp.StrokePattern
 object AspMapLayer {
 
     const val SOURCE_ID = "asp-curbs"
+    const val LAYER_SELECTED = "asp-curbs-selected"
     const val LAYER_SOLID = "asp-curbs-solid"
     const val LAYER_DASHED = "asp-curbs-dashed"
     const val LAYER_DOTTED = "asp-curbs-dotted"
@@ -52,13 +53,22 @@ object AspMapLayer {
     const val PROPERTY_OFFSET_SIGN = "offset_sign"
     const val PROPERTY_SEGMENT_ID = "segment_id"
     const val PROPERTY_LABEL = "label"
+    const val PROPERTY_SELECTED = "selected"
 
     /** Below this the overlay is hidden: the lines would be an unreadable smear of colour. */
     const val MIN_ZOOM = 14.0f
 
     fun emptySource(): GeoJsonSource = GeoJsonSource(SOURCE_ID, FeatureCollection.fromFeatures(emptyList()))
 
-    fun toFeatureCollection(curbs: List<EvaluatedCurb>): FeatureCollection = FeatureCollection.fromFeatures(
+    /**
+     * @param selectedId the curb the user tapped, stamped onto its feature so the highlight layer
+     *   can filter for it. Carried as a property rather than as a layer filter rebuilt on every
+     *   selection, because the features are re-uploaded on selection change anyway.
+     */
+    fun toFeatureCollection(
+        curbs: List<EvaluatedCurb>,
+        selectedId: String? = null,
+    ): FeatureCollection = FeatureCollection.fromFeatures(
         curbs.mapNotNull { evaluated ->
             val points = evaluated.curb.geometry.map { Point.fromLngLat(it.lon, it.lat) }
             if (points.size < 2) return@mapNotNull null
@@ -68,6 +78,7 @@ object AspMapLayer {
                 addNumberProperty(PROPERTY_OFFSET_SIGN, evaluated.curb.sideSign)
                 addStringProperty(PROPERTY_SEGMENT_ID, evaluated.curb.segment.id)
                 addStringProperty(PROPERTY_LABEL, label(evaluated))
+                addBooleanProperty(PROPERTY_SELECTED, evaluated.curb.segment.id == selectedId)
             }
         },
     )
@@ -80,11 +91,38 @@ object AspMapLayer {
     }
 
     fun layers(darkTheme: Boolean): List<LineLayer> = listOf(
+        // First, so the halo sits under the curb it is highlighting rather than washing it out.
+        selectionLayer(darkTheme),
         layer(LAYER_SOLID, StrokePattern.SOLID, darkTheme),
         layer(LAYER_DOTTED, StrokePattern.DOTTED, darkTheme),
         // Dashed last so "move now" and "move within the hour" draw over everything else.
         layer(LAYER_DASHED, StrokePattern.DASHED, darkTheme),
     )
+
+    /**
+     * A wide neutral casing under the selected curb.
+     *
+     * Neutral rather than a colour of its own: the curb's own status colour is the information on
+     * this map, and a selection tint over it would either hide that or invent a ninth status. A
+     * halo reads as "this one" without saying anything about the rules.
+     */
+    private fun selectionLayer(darkTheme: Boolean): LineLayer = LineLayer(LAYER_SELECTED, SOURCE_ID)
+        .withProperties(
+            PropertyFactory.lineColor(Color.parseColor(if (darkTheme) "#FFFFFF" else "#202124")),
+            PropertyFactory.lineOpacity(if (darkTheme) 0.55f else 0.35f),
+            PropertyFactory.lineOffset(offsetExpression()),
+            PropertyFactory.lineCap("round"),
+            PropertyFactory.lineWidth(
+                Expression.interpolate(
+                    Expression.linear(),
+                    Expression.zoom(),
+                    Expression.stop(MIN_ZOOM, 4.0f),
+                    Expression.stop(18f, 13.0f),
+                ),
+            ),
+        )
+        .withFilter(Expression.eq(Expression.get(PROPERTY_SELECTED), Expression.literal(true)))
+        .also { it.minZoom = MIN_ZOOM }
 
     private fun layer(id: String, pattern: StrokePattern, darkTheme: Boolean): LineLayer {
         val statuses = CurbStatus.entries.filter { it.strokePattern == pattern }

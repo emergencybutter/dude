@@ -112,7 +112,8 @@ object SweepSchedule {
         calendar: SuspensionCalendar = SuspensionCalendar.EMPTY,
     ): CurbEvaluation = evaluate(segment.regulations, now, calendar)
 
-    private fun isAroundTheClock(regulation: Regulation): Boolean =
+    /** Shared with [ParkingWindow], which must call a curb hopeless on exactly the same grounds. */
+    internal fun isAroundTheClock(regulation: Regulation): Boolean =
         regulation.isAllDay &&
             regulation.days.size == 7 &&
             regulation.kind in setOf(

@@ -40,15 +40,23 @@ data class TimeWindow(val start: LocalTime, val end: LocalTime) {
 
     operator fun contains(time: LocalTime): Boolean = time >= start && time < end
 
-    override fun toString(): String = "${format(start)}-${format(end)}"
+    override fun toString(): String = "${clock(start)}-${clock(end)}"
 
-    private fun format(t: LocalTime): String {
-        val hour = when (val h = t.hour % 12) {
-            0 -> 12
-            else -> h
+    companion object {
+        /**
+         * A wall-clock time as a sign writes it: "8am", "9:30am".
+         *
+         * Public because the UI renders single moments ("free again at 9:30am") as well as windows,
+         * and the two must not drift into different house styles on the same screen.
+         */
+        fun clock(t: LocalTime): String {
+            val hour = when (val h = t.hour % 12) {
+                0 -> 12
+                else -> h
+            }
+            val suffix = if (t.hour < 12) "am" else "pm"
+            return if (t.minute == 0) "$hour$suffix" else "$hour:%02d%s".format(t.minute, suffix)
         }
-        val suffix = if (t.hour < 12) "am" else "pm"
-        return if (t.minute == 0) "$hour$suffix" else "$hour:%02d%s".format(t.minute, suffix)
     }
 }
 

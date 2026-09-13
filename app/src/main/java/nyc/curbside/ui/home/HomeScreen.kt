@@ -32,11 +32,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import java.time.Duration
 import java.time.format.DateTimeFormatter
 import nyc.curbside.asp.CurbStatus
 import nyc.curbside.asp.NYC
 import nyc.curbside.data.db.ParkingEventEntity
+import nyc.curbside.ui.humaniseDuration
 
 private val PARKED_AT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM, h:mm a")
 private val MOVE_BY: DateTimeFormatter = DateTimeFormatter.ofPattern("EEEE h:mm a")
@@ -179,18 +179,7 @@ private fun countdownText(state: HomeUiState): String {
         state.status == CurbStatus.SUSPENDED_TODAY -> "Alternate side suspended today"
         state.status == CurbStatus.UNKNOWN -> "No sign data for this curb"
         remaining == null -> state.status.label
-        else -> "Move in ${humanise(remaining)}"
-    }
-}
-
-private fun humanise(duration: Duration): String {
-    val days = duration.toDays()
-    val hours = duration.toHours() % 24
-    val minutes = duration.toMinutes() % 60
-    return when {
-        days > 0 -> "${days}d ${hours}h"
-        hours > 0 -> "${hours}h ${minutes}m"
-        else -> "${minutes}m"
+        else -> "Move in ${humaniseDuration(remaining)}"
     }
 }
 
