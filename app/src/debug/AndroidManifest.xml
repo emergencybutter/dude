@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only. The dataset bundle is normally served over https, but during development it is a
+  `python3 -m http.server` on the host machine reached at 10.0.2.2, and API 28+ blocks plaintext by
+  default — silently, because AspDatasetInstaller wraps the fetch in runCatching, so the only symptom
+  is a curb table that stays empty. Release builds never see this file.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:usesCleartextTraffic="true" />
+</manifest>

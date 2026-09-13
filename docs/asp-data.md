@@ -7,7 +7,7 @@ Where the rules come from and how they get onto the phone.
 | What | Dataset | Size | Refresh |
 | --- | --- | --- | --- |
 | Parking regulation signs | [`nfid-uabd`](https://data.cityofnewyork.us/Transportation/Parking-Regulation-Locations-and-Signs/nfid-uabd) on NYC Open Data | ~1M rows | Monthly |
-| Street centrelines (CSCL) | [`exjm-f27b`](https://data.cityofnewyork.us/City-Government/NYC-Street-Centerline-CSCL-/exjm-f27b) | ~120k segments | Monthly |
+| Street centrelines (CSCL) | [`inkn-q76z`](https://data.cityofnewyork.us/City-Government/Centerline/inkn-q76z) | ~120k segments | Monthly |
 | Alternate side suspensions | [NYC 311 public API](https://api-portal.nyc.gov/), `GET https://api.nyc.gov/public/api/GetCalendar?fromdate=&todate=` with an `Ocp-Apim-Subscription-Key` header | ~90 days | Weekly |
 
 The first two are preprocessed offline. Only the third is fetched by the app, and it is a few

@@ -13,7 +13,7 @@ Inputs (both public, no key required):
 
 * Parking Regulation Locations and Signs — ``nfid-uabd`` on data.cityofnewyork.us. One row per
   sign, carrying the sign copy, the block it is on, and which side of the street.
-* NYC Street Centerline (CSCL) — ``exjm-f27b``. One LineString per street segment.
+* NYC Street Centerline (CSCL) — ``inkn-q76z``. One LineString per street segment.
 
 Output::
 
@@ -49,7 +49,7 @@ from typing import Iterable, Iterator, Sequence
 
 SOCRATA_HOST = "https://data.cityofnewyork.us"
 SIGNS_DATASET = "nfid-uabd"
-CENTERLINE_DATASET = "exjm-f27b"
+CENTERLINE_DATASET = "inkn-q76z"
 PAGE_SIZE = 50_000
 
 # ---------------------------------------------------------------------------
@@ -387,8 +387,30 @@ class SegmentBuild:
     geometry: list[tuple[float, float]] = field(default_factory=list)
 
 
+# The two datasets spell the same street differently: the sign inventory writes "STERLING STREET"
+# and "AVENUE N", the centreline file writes "STERLING ST" and "AVE N". Joining on the raw label
+# therefore matches almost nothing — roughly six sign rows in seven end an abbreviated suffix apart
+# from their geometry. Canonicalising both sides to the centreline's short form is the cheap half of
+# the join problem in `docs/asp-data.md`; the other half, keying on LION segment ids instead of
+# street names, is still open.
+STREET_TYPES = {
+    "STREET": "ST", "AVENUE": "AVE", "PLACE": "PL", "ROAD": "RD", "DRIVE": "DR",
+    "BOULEVARD": "BLVD", "PARKWAY": "PKWY", "HIGHWAY": "HWY", "COURT": "CT", "LANE": "LN",
+    "TERRACE": "TER", "PLAZA": "PLZ", "SQUARE": "SQ", "EXPRESSWAY": "EXPY", "TURNPIKE": "TPKE",
+    "CIRCLE": "CIR", "EXTENSION": "EXT",
+}
+
+DIRECTIONS = {"NORTH": "N", "SOUTH": "S", "EAST": "E", "WEST": "W"}
+
+
 def normalize_street(name: str) -> str:
-    return re.sub(r"\s+", " ", (name or "").strip().upper())
+    """Upper-case, collapse whitespace, and reduce street types and directions to their short form.
+
+    Applied to both sides of the join and to the pieces of a curb id, so changing it renumbers every
+    id — which is safe only because a refresh replaces the curb table wholesale.
+    """
+    words = re.sub(r"\s+", " ", (name or "").strip().upper()).split(" ")
+    return " ".join(STREET_TYPES.get(w, DIRECTIONS.get(w, w)) for w in words)
 
 
 def segment_key(on: str, frm: str, to: str, side: str) -> str:
@@ -414,7 +436,7 @@ def build_segments(signs: Iterable[dict], centerlines: Iterable[dict], report_un
             continue
         # Socrata gives GeoJSON order (lon, lat); everything downstream wants (lat, lon).
         points = [(float(lat), float(lon)) for lon, lat in parts[0]]
-        key = normalize_street(row.get("st_label", ""))
+        key = normalize_street(row.get("stname_label", ""))
         geometry_by_block.setdefault(key, points)
 
     builds: dict[str, SegmentBuild] = {}
@@ -525,7 +547,7 @@ def main(argv: Sequence[str]) -> int:
     print(f"  {len(signs)} sign rows", file=sys.stderr)
 
     print("Fetching street centrelines…", file=sys.stderr)
-    centerlines = load_rows(args.centerlines, CENTERLINE_DATASET, "st_label,the_geom", None, None)
+    centerlines = load_rows(args.centerlines, CENTERLINE_DATASET, "stname_label,the_geom", None, None)
     print(f"  {len(centerlines)} centreline rows", file=sys.stderr)
 
     segments, stats = build_segments(signs, centerlines, args.report_unparsed)

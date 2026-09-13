@@ -18,6 +18,7 @@ from asp_pipeline import (
     Regulation,
     bbox,
     encode_polyline,
+    normalize_street,
     parse_sign,
     segment_key,
     side_sign,
@@ -162,6 +163,29 @@ class SegmentKeyTest(unittest.TestCase):
             segment_key("bergen st", " 5 av ", "6  AV", "N"),
             segment_key("BERGEN ST", "5 AV", "6 AV", "N"),
         )
+
+
+class NormalizeStreetTest(unittest.TestCase):
+    """The sign inventory and the centreline file spell street types differently, and the join is
+    on the name alone. Every case here is a real pairing that produced no geometry until both sides
+    were reduced to the same short form."""
+
+    def test_street_types_reduce_to_the_centreline_spelling(self):
+        self.assertEqual(normalize_street("STERLING STREET"), "STERLING ST")
+        self.assertEqual(normalize_street("AVENUE N"), "AVE N")
+        self.assertEqual(normalize_street("OCEAN PARKWAY"), "OCEAN PKWY")
+
+    def test_directions_reduce_to_an_initial(self):
+        self.assertEqual(normalize_street("WILLIAMSBURG ST WEST"), "WILLIAMSBURG ST W")
+
+    def test_a_name_that_needs_no_reduction_is_untouched(self):
+        self.assertEqual(normalize_street("BROADWAY"), "BROADWAY")
+
+    def test_the_centreline_spelling_is_already_canonical(self):
+        self.assertEqual(normalize_street("W  60 ST"), normalize_street("WEST 60 STREET"))
+
+    def test_a_sign_and_its_centreline_agree_after_normalising(self):
+        self.assertEqual(normalize_street("STERLING STREET"), normalize_street("STERLING ST"))
 
 
 def decode(encoded: str, precision: int = 6) -> list[tuple[float, float]]:
