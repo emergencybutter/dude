@@ -16,6 +16,7 @@ import nyc.curbside.asp.NYC
 import nyc.curbside.asp.SuspensionRepository
 import nyc.curbside.data.CurbsideSettings
 import nyc.curbside.data.db.CurbSegmentDao
+import nyc.curbside.detect.CarBluetoothReceiver
 import nyc.curbside.detect.DetectionRegistrar
 import nyc.curbside.share.HouseholdRepository
 import nyc.curbside.share.PairingInvite
@@ -130,8 +131,15 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { household.leave() }
     }
 
-    fun onChooseCarStereo() {
-        // Handled by the screen, which needs the Bluetooth permission and the bonded-device list.
+    /**
+     * Records which paired device is the car.
+     *
+     * Naming it is what makes a Bluetooth disconnect mean "the drive ended" rather than "the
+     * headphones came off", so [CarBluetoothReceiver] ignores every other device. Passing null
+     * forgets it and falls back to motion sensing alone.
+     */
+    fun onCarStereoChosen(address: String?, name: String?) {
+        viewModelScope.launch { settings.setCarBluetooth(address, name) }
     }
 
     fun onRefreshData() {
