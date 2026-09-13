@@ -198,12 +198,23 @@ private fun Background(onContinue: () -> Unit, onSkip: () -> Unit) {
         },
         style = MaterialTheme.typography.bodyMedium,
     )
-    Text(
-        "Curbside uses it a few times a day, for a few seconds each time, at the end of a drive. " +
-            "It is not a continuous track of where you are.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.outline,
-    )
+    // The three things people actually want to know before granting "all the time": when it
+    // happens, how long it lasts, and what runs in between. In between, nothing does.
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        listOf(
+            "Only at the end of a drive. Your phone notices the car has stopped, Curbside checks " +
+                "the spot once, and that is it.",
+            "A few seconds, once or twice a day. In between it is not running — the GPS stays " +
+                "off and nothing is following you around.",
+            "On a day you do not drive, Curbside does nothing at all.",
+        ).forEach { line ->
+            Text(
+                "·  $line",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+        }
+    }
 
     Button(onClick = onContinue, modifier = Modifier.fillMaxWidth()) {
         Text(if (backgroundNeedsSettings()) "Open settings" else "Continue")
