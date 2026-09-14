@@ -27,16 +27,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import java.util.UUID
-
-/**
- * How sure we are that a paired device is a car, from what Bluetooth says about itself.
- *
- * Nothing here is a name match. Devices declare a minor class, and there is a value reserved for
- * car audio that headphones do not use; car kits also advertise phonebook access, because they pull
- * your contacts onto the dash, which headphones have no reason to do.
- */
-enum class CarLikelihood { CAR, MAYBE, OTHER }
+import nyc.curbside.drive.CarLikelihood
+import nyc.curbside.drive.CarStereoLikelihood
 
 /** A paired device, read once when the dialog opens. */
 data class PairedDevice(
@@ -45,10 +37,6 @@ data class PairedDevice(
     val audio: Boolean,
     val likelihood: CarLikelihood = CarLikelihood.OTHER,
 )
-
-/** Phonebook Access Profile. A car wants your contacts; a pair of earbuds does not. */
-private val PBAP_SERVER: UUID = UUID.fromString("0000112F-0000-1000-8000-00805F9B34FB")
-private val MAP_SERVER: UUID = UUID.fromString("00001132-0000-1000-8000-00805F9B34FB")
 
 /**
  * BLUETOOTH_CONNECT is needed to read so much as the name of a paired device on API 31+, so the
@@ -71,9 +59,9 @@ fun pairedDevices(context: Context): List<PairedDevice> = runCatching {
                 address = it.address,
                 label = it.name?.takeIf(String::isNotBlank) ?: it.address,
                 audio = it.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.AUDIO_VIDEO,
-                likelihood = likelihoodOf(
+                likelihood = CarStereoLikelihood.of(
                     it.bluetoothClass?.deviceClass,
-                    it.uuids.orEmpty().mapNotNull { parcel -> parcel?.uuid },
+                    it.uuids.orEmpty().mapNotNull { parcel -> parcel?.uuid?.toString() },
                 ),
             )
         }
@@ -81,26 +69,6 @@ fun pairedDevices(context: Context): List<PairedDevice> = runCatching {
         // head units report an odd device class, and a list that omits the user's car is useless.
         .sortedWith(compareByDescending<PairedDevice> { it.audio }.thenBy { it.label.lowercase() })
 }.getOrDefault(emptyList())
-
-/**
- * What a device's own Bluetooth class says it is.
- *
- * [BluetoothClass.Device.AUDIO_VIDEO_CAR_AUDIO] is reserved for car audio and is the one honest
- * answer available: no headphone reports it. Hands-free is weaker on its own — speakerphones use it
- * too — so it only counts as a car alongside phonebook or message access, which is a dashboard
- * wanting your contacts.
- *
- * Plenty of head units are lazy and report nothing useful, so a manual picker has to remain.
- */
-internal fun likelihoodOf(deviceClass: Int?, services: List<UUID>): CarLikelihood {
-    val phonebook = services.any { it == PBAP_SERVER || it == MAP_SERVER }
-    return when (deviceClass) {
-        BluetoothClass.Device.AUDIO_VIDEO_CAR_AUDIO -> CarLikelihood.CAR
-        BluetoothClass.Device.AUDIO_VIDEO_HANDSFREE ->
-            if (phonebook) CarLikelihood.CAR else CarLikelihood.MAYBE
-        else -> CarLikelihood.OTHER
-    }
-}
 
 /** Every paired device that says it is a car, for setting the household up without a list. */
 fun carStereos(context: Context): List<PairedDevice> =
