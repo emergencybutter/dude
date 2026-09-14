@@ -14,6 +14,8 @@ import nyc.curbside.data.CurbsideSettings
 import nyc.curbside.data.db.ParkingEventDao
 import nyc.curbside.data.db.ParkingEventEntity
 import nyc.curbside.di.ApplicationScope
+import nyc.curbside.data.VehicleRepository
+import nyc.curbside.drive.VehicleEvidence
 import nyc.curbside.notify.Notifications
 
 /**
@@ -34,6 +36,8 @@ class CurbsideMessagingService : FirebaseMessagingService() {
     @Inject lateinit var settings: CurbsideSettings
 
     @Inject lateinit var dao: ParkingEventDao
+
+    @Inject lateinit var vehicles: VehicleRepository
 
     @Inject @ApplicationScope lateinit var scope: CoroutineScope
 
@@ -59,6 +63,13 @@ class CurbsideMessagingService : FirebaseMessagingService() {
                 ),
             ) ?: return@launch
 
+            // Was this one of our cars, and did we think it was somewhere else? That is the
+            // difference between "your partner parked" and "your partner has moved your car",
+            // which is the whole point of naming cars in the first place.
+            val ourCar = vehicles.byId(payload.vehicleId)
+            val wasParkedElsewhere = payload.vehicleId != null &&
+                dao.active().any { it.vehicleId == payload.vehicleId && it.receivedFrom == null }
+
             dao.upsert(
                 ParkingEventEntity(
                     id = eventId,
@@ -68,6 +79,8 @@ class CurbsideMessagingService : FirebaseMessagingService() {
                     accuracyMeters = payload.accuracyMeters,
                     fixQuality = "SHARED",
                     endedBy = "SHARED",
+                    vehicleId = payload.vehicleId,
+                    vehicleEvidence = payload.vehicleId?.let { VehicleEvidence.STEREO.name },
                     address = payload.address,
                     note = payload.note,
                     moveByEpochMillis = payload.moveByEpochMillis,
@@ -75,11 +88,18 @@ class CurbsideMessagingService : FirebaseMessagingService() {
                 ),
             )
 
-            Notifications.postSharedByPartner(
-                this@CurbsideMessagingService,
-                fromName,
-                payload.address ?: payload.curbLabel.orEmpty(),
-            )
+            // Whatever we were holding for this car is now out of date wherever it came from.
+            payload.vehicleId?.let {
+                dao.clearCurrentForVehicle(it, payload.parkedAtEpochMillis, exceptId = eventId)
+            }
+
+            val where = payload.address ?: payload.curbLabel.orEmpty()
+            val carName = ourCar?.name ?: payload.vehicleLabel
+            if (wasParkedElsewhere && carName != null) {
+                Notifications.postPartnerMovedCar(this@CurbsideMessagingService, fromName, carName, where)
+            } else {
+                Notifications.postSharedByPartner(this@CurbsideMessagingService, fromName, where, carName)
+            }
         }
     }
 

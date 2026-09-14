@@ -1,6 +1,38 @@
 # Sharing
 
-Two people, one car, and a backend that cannot read where it is.
+Two people, two cars either of them may be driving, and a backend that cannot read where any of
+them is.
+
+## Which car
+
+Sharing is per car, not per person, because "my car" stops meaning anything the moment a household
+swaps keys. A spot arriving from your partner is either news about their car or news about yours,
+and only the second one is worth waking you for.
+
+The car is identified by its stereo's Bluetooth address. That is the one fact both phones hold
+independently — each is paired with the stereo, or neither could have detected a drive in that car
+at all — so hashing it gives the same vehicle id on both handsets with no agreement protocol and no
+extra pairing step. The id travels inside the encrypted envelope like everything else; the server
+never sees which car, only that something was shared.
+
+When a car cannot be identified the app does not pick one. The cascade is:
+
+1. **The stereo.** Definitive, and the usual case.
+2. **Where the drive began.** A car you are driving was parked somewhere a moment ago, and the app
+   knows where it left each of them. This costs nothing — it is whatever fix the phone already had,
+   never one taken to answer the question. Two cars within 75m of the start is not an answer, it is
+   a question.
+3. **Ask.** The home screen puts the question on the card, with the cars as buttons.
+
+A car added by hand, with no stereo, has an id local to the phone that made it. It will not line up
+with the same car on a partner's phone, and the settings screen says so rather than hiding it.
+
+## Superseding
+
+A car cannot be in two streets at once, so a parking event for a car closes out whatever was held
+for it before — including a record the other phone produced. That is what makes "she moved my car"
+arrive as a notification rather than as two contradictory pins: the app was holding a spot for that
+car, and something else turned up for it from someone else.
 
 ## The two paths
 

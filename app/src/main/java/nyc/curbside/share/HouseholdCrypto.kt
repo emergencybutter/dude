@@ -23,6 +23,12 @@ data class SharedParkingPayload(
     val curbLabel: String? = null,
     val moveByEpochMillis: Long? = null,
     val vehicleLabel: String? = null,
+    /**
+     * Which car this is, derived from its stereo's address so both phones arrive at the same id
+     * without having to agree on one. Absent from a car added by hand, and from any phone on a
+     * build that predates vehicles.
+     */
+    val vehicleId: String? = null,
 )
 
 /**

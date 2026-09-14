@@ -21,6 +21,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import nyc.curbside.R
 import nyc.curbside.data.CurbsideSettings
+import nyc.curbside.data.VehicleRepository
 import nyc.curbside.data.db.ParkingEventDao
 import nyc.curbside.data.db.ParkingEventEntity
 
@@ -92,10 +93,12 @@ class ShareWorker @AssistedInject constructor(
     @Assisted params: WorkerParameters,
     private val dao: ParkingEventDao,
     private val household: HouseholdRepository,
+    private val vehicles: VehicleRepository,
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
         val eventId = inputData.getString(KEY_EVENT_ID) ?: return Result.failure()
+
         val event = dao.byId(eventId) ?: return Result.failure()
 
         // Respect a later opt-out: the user may have suppressed this event after it was queued.
@@ -110,6 +113,8 @@ class ShareWorker @AssistedInject constructor(
             address = event.address,
             note = event.note,
             moveByEpochMillis = event.moveByEpochMillis,
+            vehicleId = event.vehicleId,
+            vehicleLabel = vehicles.byId(event.vehicleId)?.name,
         )
 
         return if (household.publish(eventId, payload)) {

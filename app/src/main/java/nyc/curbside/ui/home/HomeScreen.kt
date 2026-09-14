@@ -35,6 +35,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.time.format.DateTimeFormatter
 import nyc.curbside.asp.CurbStatus
 import nyc.curbside.asp.NYC
+import nyc.curbside.data.Vehicle
 import nyc.curbside.data.db.ParkingEventEntity
 import nyc.curbside.ui.humaniseDuration
 
@@ -53,22 +54,21 @@ fun HomeScreen(onOpenMap: () -> Unit, viewModel: HomeViewModel = hiltViewModel()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        val car = state.car
-        if (car == null) {
+        if (state.cars.isEmpty()) {
             NoCarCard(onOpenMap)
         } else {
-            CarCard(
-                car = car,
-                state = state,
-                onShare = { viewModel.shareIntent()?.let(context::startActivity) },
-                onNavigate = { context.startActivity(navigateIntent(car)) },
-                onDroveAway = viewModel::onDroveAway,
-                onOpenMap = onOpenMap,
-            )
-        }
-
-        state.partnerCars.forEach { partnerCar ->
-            PartnerCard(partnerCar) { context.startActivity(navigateIntent(partnerCar)) }
+            state.cars.forEach { row ->
+                CarCard(
+                    row = row,
+                    vehicles = state.vehicles,
+                    autoShareEnabled = state.autoShareEnabled,
+                    onShare = { context.startActivity(viewModel.shareIntent(row.event)) },
+                    onNavigate = { context.startActivity(navigateIntent(row.event)) },
+                    onDroveAway = { viewModel.onDroveAway(row.event.id) },
+                    onOpenMap = onOpenMap,
+                    onVehicleChosen = { viewModel.onVehicleChosen(row.event.id, it) },
+                )
+            }
         }
     }
 }
@@ -91,19 +91,30 @@ private fun NoCarCard(onOpenMap: () -> Unit) {
 
 @Composable
 private fun CarCard(
-    car: ParkingEventEntity,
-    state: HomeUiState,
+    row: ParkedCarRow,
+    vehicles: List<Vehicle>,
+    autoShareEnabled: Boolean,
     onShare: () -> Unit,
     onNavigate: () -> Unit,
     onDroveAway: () -> Unit,
     onOpenMap: () -> Unit,
+    onVehicleChosen: (String) -> Unit,
 ) {
+    val car = row.event
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            StatusHeadline(state)
+            // The car's name leads, because with two of them "move it by Thursday" is useless
+            // until you know which one is meant.
+            Text(
+                row.vehicleName ?: "Car",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.outline,
+            )
+
+            StatusHeadline(row)
 
             car.address?.let { Text(it, style = MaterialTheme.typography.titleMedium) }
-            state.curbLabel?.let {
+            row.curbLabel?.let {
                 Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.outline)
             }
 
@@ -114,7 +125,15 @@ private fun CarCard(
                 color = MaterialTheme.colorScheme.outline,
             )
 
-            if (state.evaluation?.partiallyRestricted == true) {
+            if (row.byPartner) {
+                Text(
+                    "Left here by someone else in your household.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            }
+
+            if (row.evaluation?.partiallyRestricted == true) {
                 Text(
                     "Part of this block is no standing at any time. Curbside cannot tell which " +
                         "stretch — check the sign next to the car.",
@@ -123,7 +142,11 @@ private fun CarCard(
                 )
             }
 
-            if (state.needsSideConfirmation) {
+            if (row.needsVehicle && vehicles.isNotEmpty()) {
+                WhichCarPrompt(vehicles, onVehicleChosen)
+            }
+
+            if (row.needsSideConfirmation) {
                 HorizontalDivider()
                 Text(
                     "The fix was too rough to tell which side of the street you are on, and the " +
@@ -135,11 +158,13 @@ private fun CarCard(
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onNavigate) { Text("Walk to car") }
-                OutlinedButton(onClick = onShare) { Text("Share") }
-                OutlinedButton(onClick = onDroveAway) { Text("I moved it") }
+                if (!row.byPartner) {
+                    OutlinedButton(onClick = onShare) { Text("Share") }
+                    OutlinedButton(onClick = onDroveAway) { Text("I moved it") }
+                }
             }
 
-            if (state.autoShareEnabled) {
+            if (autoShareEnabled && !row.byPartner) {
                 Text(
                     "Shared with your household automatically.",
                     style = MaterialTheme.typography.labelSmall,
@@ -151,12 +176,33 @@ private fun CarCard(
 }
 
 /**
+ * The fallback of the fallback: no stereo spoke and the drive did not start anywhere a known car
+ * was left, so the app has to ask rather than name the wrong one.
+ */
+@Composable
+private fun WhichCarPrompt(vehicles: List<Vehicle>, onChosen: (String) -> Unit) {
+    HorizontalDivider()
+    Text("Which car is this?", style = MaterialTheme.typography.bodyMedium)
+    Text(
+        "Curbside could not tell — no stereo connected, and the drive did not start where either " +
+            "car was left.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.outline,
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        vehicles.forEach { vehicle ->
+            OutlinedButton(onClick = { onChosen(vehicle.id) }) { Text(vehicle.name) }
+        }
+    }
+}
+
+/**
  * The single most important thing on the screen: how long until the car has to move, in the colour
  * the map uses for the same state.
  */
 @Composable
-private fun StatusHeadline(state: HomeUiState) {
-    val status = state.status
+private fun StatusHeadline(row: ParkedCarRow) {
+    val status = row.status
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Box(
             Modifier
@@ -165,11 +211,11 @@ private fun StatusHeadline(state: HomeUiState) {
         )
         Column {
             Text(
-                text = countdownText(state),
+                text = countdownText(row),
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.SemiBold,
             )
-            state.evaluation?.moveBy?.let {
+            row.evaluation?.moveBy?.let {
                 Text(
                     "Cleaning starts ${MOVE_BY.format(it)}",
                     style = MaterialTheme.typography.bodySmall,
@@ -180,14 +226,14 @@ private fun StatusHeadline(state: HomeUiState) {
     }
 }
 
-private fun countdownText(state: HomeUiState): String {
-    val remaining = state.timeUntilMove
+private fun countdownText(row: ParkedCarRow): String {
+    val remaining = row.timeUntilMove
     return when {
-        state.status == CurbStatus.RESTRICTED_NOW -> "Move it now"
-        state.status == CurbStatus.ALWAYS_RESTRICTED -> "No parking here at any time"
-        state.status == CurbStatus.SUSPENDED_TODAY -> "Alternate side suspended today"
-        state.status == CurbStatus.UNKNOWN -> "No sign data for this curb"
-        remaining == null -> state.status.label
+        row.status == CurbStatus.RESTRICTED_NOW -> "Move it now"
+        row.status == CurbStatus.ALWAYS_RESTRICTED -> "No parking here at any time"
+        row.status == CurbStatus.SUSPENDED_TODAY -> "Alternate side suspended today"
+        row.status == CurbStatus.UNKNOWN -> "No sign data for this curb"
+        remaining == null -> row.status.label
         else -> "Move in ${humaniseDuration(remaining)}"
     }
 }
@@ -196,18 +242,6 @@ private fun accuracyNote(car: ParkingEventEntity): String = when (car.fixQuality
     "BREADCRUMB" -> " · approximate, last position before you lost signal"
     "MANUAL" -> " · pin you dropped"
     else -> " · accurate to about ${car.accuracyMeters.toInt()}m"
-}
-
-@Composable
-private fun PartnerCard(car: ParkingEventEntity, onNavigate: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Shared with you", style = MaterialTheme.typography.labelLarge)
-            Text(car.address ?: "Location shared", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(4.dp))
-            OutlinedButton(onClick = onNavigate) { Text("Walk there") }
-        }
-    }
 }
 
 private fun navigateIntent(car: ParkingEventEntity): Intent {

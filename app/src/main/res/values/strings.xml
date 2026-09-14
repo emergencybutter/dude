@@ -20,6 +20,8 @@
     <string name="action_walk_to_car">Walk to car</string>
 
     <string name="notification_partner_parked">%1$s parked</string>
+    <string name="notification_partner_parked_car">%1$s parked the %2$s</string>
+    <string name="notification_partner_moved_car">%1$s moved the %2$s</string>
 
     <string name="notification_failed_title">Could not find your car</string>
     <string name="notification_failed_text">No usable location at the end of that drive. Open Curbside to drop a pin.</string>

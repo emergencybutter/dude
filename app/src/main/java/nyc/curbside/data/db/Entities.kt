@@ -11,7 +11,10 @@ import androidx.room.PrimaryKey
  * screen can answer "where do I usually find a space on a Tuesday", which turns out to be the
  * second most useful thing the app does.
  */
-@Entity(tableName = "parking_events", indices = [Index("parkedAt"), Index("clearedAt")])
+@Entity(
+    tableName = "parking_events",
+    indices = [Index("parkedAt"), Index("clearedAt"), Index("vehicleId")],
+)
 data class ParkingEventEntity(
     @PrimaryKey val id: String,
     val parkedAt: Long,
@@ -28,6 +31,16 @@ data class ParkingEventEntity(
     val address: String? = null,
     val note: String? = null,
     val photoUri: String? = null,
+
+    /**
+     * Which car this is, and how the app decided. Null means it could not tell and has not been
+     * told — the home screen asks, and until it is answered the event stands on its own.
+     *
+     * See [nyc.curbside.drive.VehicleEvidence] for the values: a stereo that named itself, a drive
+     * that began where that car was left, or the user saying so.
+     */
+    val vehicleId: String? = null,
+    val vehicleEvidence: String? = null,
 
     /** The curb this was matched to, if any, and whether the side is trusted. */
     val curbSegmentId: String? = null,

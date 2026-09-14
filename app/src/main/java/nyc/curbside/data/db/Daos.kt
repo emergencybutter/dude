@@ -36,8 +36,40 @@ interface ParkingEventDao {
     @Update
     suspend fun update(event: ParkingEventEntity)
 
+    /** Every car currently parked, whoever left it there. */
+    @Query("SELECT * FROM parking_events WHERE clearedAt IS NULL ORDER BY parkedAt DESC")
+    fun observeActive(): Flow<List<ParkingEventEntity>>
+
+    @Query("SELECT * FROM parking_events WHERE clearedAt IS NULL ORDER BY parkedAt DESC")
+    suspend fun active(): List<ParkingEventEntity>
+
     @Query("UPDATE parking_events SET clearedAt = :at WHERE clearedAt IS NULL AND receivedFrom IS NULL")
     suspend fun clearCurrent(at: Long)
+
+    /**
+     * Closes out wherever this car was before.
+     *
+     * A named car supersedes its own previous spot no matter whose phone recorded it: if your wife
+     * parks your car, the record you were holding is out of date the moment hers arrives. An
+     * unnamed one can only close out other unnamed ones of your own, because nothing says which car
+     * it was — which is also exactly how this behaved before cars had names at all.
+     */
+    @Query(
+        """
+        UPDATE parking_events SET clearedAt = :at
+        WHERE clearedAt IS NULL
+          AND ((:vehicleId IS NULL AND vehicleId IS NULL AND receivedFrom IS NULL)
+               OR (:vehicleId IS NOT NULL AND vehicleId = :vehicleId))
+          AND id != :exceptId
+        """,
+    )
+    suspend fun clearCurrentForVehicle(vehicleId: String?, at: Long, exceptId: String)
+
+    @Query("UPDATE parking_events SET clearedAt = :at WHERE id = :id AND clearedAt IS NULL")
+    suspend fun clearEvent(id: String, at: Long)
+
+    @Query("UPDATE parking_events SET vehicleId = :vehicleId, vehicleEvidence = :evidence WHERE id = :id")
+    suspend fun assignVehicle(id: String, vehicleId: String, evidence: String)
 
     @Query("UPDATE parking_events SET sharedAt = :at WHERE id = :id")
     suspend fun markShared(id: String, at: Long)

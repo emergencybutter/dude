@@ -14,10 +14,13 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
+import nyc.curbside.data.Breadcrumb
 import nyc.curbside.data.CurbsideSettings
 import nyc.curbside.drive.DriveAction
 import nyc.curbside.drive.DriveSignal
 import nyc.curbside.drive.DriveStateMachine
+import nyc.curbside.location.Fix
+import nyc.curbside.location.LocationFixer
 import nyc.curbside.location.PassiveBreadcrumb
 import nyc.curbside.location.ParkingCaptureWorker
 
@@ -34,6 +37,7 @@ class DriveCoordinator @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val settings: CurbsideSettings,
     private val breadcrumb: PassiveBreadcrumb,
+    private val fixer: LocationFixer,
 ) {
 
     private val machine = DriveStateMachine()
@@ -78,7 +82,13 @@ class DriveCoordinator @Inject constructor(
         when (action) {
             DriveAction.None -> Unit
 
-            DriveAction.BeginDrive -> breadcrumb.start()
+            DriveAction.BeginDrive -> {
+                breadcrumb.start()
+                // Where the drive started is how the app tells two cars apart when no stereo did:
+                // the car you are pulling away in was parked here a moment ago. It costs nothing —
+                // this is the position the phone already had, not a fix taken to answer it.
+                settings.setDriveOrigin(fixer.lastKnown()?.let(::originOf))
+            }
 
             is DriveAction.ScheduleParkCheck -> scheduleParkCheck(action.at)
 
@@ -87,6 +97,7 @@ class DriveCoordinator @Inject constructor(
             DriveAction.DiscardShortTrip -> {
                 cancelParkCheck()
                 breadcrumb.stop()
+                forgetDrive()
             }
 
             is DriveAction.CapturePark -> {
@@ -147,6 +158,24 @@ class DriveCoordinator @Inject constructor(
     private fun cancelParkCheck() {
         context.getSystemService(AlarmManager::class.java)?.cancel(parkCheckIntent())
     }
+
+    /**
+     * Clears what was remembered about the drive that just ended.
+     *
+     * Not called on the capture path: the worker runs after this and needs both the stereo and the
+     * origin to name the car. It clears them itself once it has.
+     */
+    private suspend fun forgetDrive() {
+        settings.setDriveStereo(null)
+        settings.setDriveOrigin(null)
+    }
+
+    private fun originOf(fix: Fix) = Breadcrumb(
+        latitude = fix.point.lat,
+        longitude = fix.point.lon,
+        accuracyMeters = fix.accuracyMeters,
+        at = fix.at,
+    )
 
     private fun parkCheckIntent(): PendingIntent = PendingIntent.getBroadcast(
         context,

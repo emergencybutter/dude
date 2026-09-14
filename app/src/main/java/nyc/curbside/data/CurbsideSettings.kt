@@ -13,11 +13,15 @@ import javax.inject.Singleton
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import nyc.curbside.drive.DrivePhase
 import nyc.curbside.drive.DriveState
 import nyc.curbside.drive.SignalSource
 
 private val Context.dataStore by preferencesDataStore(name = "curbside")
+
+private val vehicleJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
 /**
  * Everything small enough not to deserve a table.
@@ -39,6 +43,16 @@ class CurbsideSettings @Inject constructor(
 
         val CAR_BLUETOOTH_ADDRESS = stringPreferencesKey("car_bluetooth_address")
         val CAR_BLUETOOTH_NAME = stringPreferencesKey("car_bluetooth_name")
+
+        val VEHICLES = stringPreferencesKey("vehicles")
+
+        /** The stereo seen during the drive now in progress, if one was. */
+        val DRIVE_STEREO = stringPreferencesKey("drive_stereo")
+
+        /** Where the drive now in progress began. Free: whatever fix the phone already had. */
+        val DRIVE_ORIGIN_LAT = stringPreferencesKey("drive_origin_lat")
+        val DRIVE_ORIGIN_LON = stringPreferencesKey("drive_origin_lon")
+        val DRIVE_ORIGIN_AT = longPreferencesKey("drive_origin_at")
 
         val BREADCRUMB_LAT = stringPreferencesKey("breadcrumb_lat")
         val BREADCRUMB_LON = stringPreferencesKey("breadcrumb_lon")
@@ -94,6 +108,87 @@ class CurbsideSettings @Inject constructor(
     }
 
     suspend fun readCarBluetoothAddress(): String? = context.dataStore.data.first()[Keys.CAR_BLUETOOTH_ADDRESS]
+
+    // ------------------------------------------------------------------------
+    // Vehicles
+    // ------------------------------------------------------------------------
+
+    /**
+     * The household's cars.
+     *
+     * Reads through the single nominated stereo that came before it, so an existing install keeps
+     * working and arrives with its one car already set up rather than an empty list and a detector
+     * that has quietly stopped recognising anything.
+     */
+    val vehicles: Flow<List<Vehicle>> = context.dataStore.data.map { it.toVehicles() }
+
+    suspend fun readVehicles(): List<Vehicle> = context.dataStore.data.first().toVehicles()
+
+    suspend fun setVehicles(vehicles: List<Vehicle>) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.VEHICLES] = vehicleJson.encodeToString(vehicles)
+            // The old single-car setting is what the detector used to read. Keep it pointing at a
+            // real stereo so a downgrade, or any code path still asking, is not left with a stale
+            // address for a car that has been removed.
+            val first = vehicles.firstOrNull { it.bluetoothAddress != null }
+            first?.bluetoothAddress?.let { prefs[Keys.CAR_BLUETOOTH_ADDRESS] = it }
+                ?: prefs.remove(Keys.CAR_BLUETOOTH_ADDRESS)
+            first?.name?.let { prefs[Keys.CAR_BLUETOOTH_NAME] = it } ?: prefs.remove(Keys.CAR_BLUETOOTH_NAME)
+        }
+    }
+
+    private fun Preferences.toVehicles(): List<Vehicle> {
+        this[Keys.VEHICLES]?.let { stored ->
+            runCatching { vehicleJson.decodeFromString<List<Vehicle>>(stored) }
+                .getOrNull()
+                ?.let { return it }
+        }
+        // Nothing stored: carry the pre-vehicles setting forward rather than starting empty.
+        val address = this[Keys.CAR_BLUETOOTH_ADDRESS] ?: return emptyList()
+        return listOf(Vehicle.fromStereo(address, this[Keys.CAR_BLUETOOTH_NAME] ?: "My car"))
+    }
+
+    // ------------------------------------------------------------------------
+    // The drive in progress
+    // ------------------------------------------------------------------------
+
+    /** Remembers which stereo was seen, so the capture can name the car it belonged to. */
+    suspend fun setDriveStereo(address: String?) {
+        context.dataStore.edit { prefs ->
+            address?.let { prefs[Keys.DRIVE_STEREO] = it } ?: prefs.remove(Keys.DRIVE_STEREO)
+        }
+    }
+
+    suspend fun readDriveStereo(): String? = context.dataStore.data.first()[Keys.DRIVE_STEREO]
+
+    /**
+     * Where this drive started, used to tell one car from another when no stereo did.
+     *
+     * Deliberately whatever the phone had cached — see [nyc.curbside.location.LocationFixer]. No
+     * fix is turned on to answer this; an absent or stale origin simply means the question gets
+     * put to the user instead.
+     */
+    suspend fun setDriveOrigin(origin: Breadcrumb?) {
+        context.dataStore.edit { prefs ->
+            if (origin == null) {
+                prefs.remove(Keys.DRIVE_ORIGIN_LAT)
+                prefs.remove(Keys.DRIVE_ORIGIN_LON)
+                prefs.remove(Keys.DRIVE_ORIGIN_AT)
+            } else {
+                prefs[Keys.DRIVE_ORIGIN_LAT] = origin.latitude.toString()
+                prefs[Keys.DRIVE_ORIGIN_LON] = origin.longitude.toString()
+                prefs[Keys.DRIVE_ORIGIN_AT] = origin.at.toEpochMilli()
+            }
+        }
+    }
+
+    suspend fun readDriveOrigin(): Breadcrumb? {
+        val prefs = context.dataStore.data.first()
+        val lat = prefs[Keys.DRIVE_ORIGIN_LAT]?.toDoubleOrNull() ?: return null
+        val lon = prefs[Keys.DRIVE_ORIGIN_LON]?.toDoubleOrNull() ?: return null
+        val at = prefs[Keys.DRIVE_ORIGIN_AT] ?: return null
+        return Breadcrumb(lat, lon, Float.MAX_VALUE, java.time.Instant.ofEpochMilli(at))
+    }
 
     /**
      * The most recent free location fix seen while driving. Costs nothing to collect (see

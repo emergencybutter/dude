@@ -20,6 +20,8 @@ import nyc.curbside.asp.NYC
 import nyc.curbside.data.db.ParkingEventDao
 import nyc.curbside.data.db.ParkingEventEntity
 import nyc.curbside.drive.SignalSource
+import nyc.curbside.drive.VehicleEvidence
+import nyc.curbside.drive.VehicleIdentification
 import nyc.curbside.location.Fix
 import nyc.curbside.location.FixQuality
 import nyc.curbside.notify.MoveReminderScheduler
@@ -43,6 +45,7 @@ class ParkingRepository @Inject constructor(
     private val reminders: MoveReminderScheduler,
     private val share: ShareCoordinator,
     private val settings: CurbsideSettings,
+    private val vehicles: VehicleRepository,
 ) {
 
     fun observeCurrent(): Flow<ParkingEventEntity?> = dao.observeCurrent()
@@ -64,6 +67,11 @@ class ParkingRepository @Inject constructor(
         val best = matches.firstOrNull()
         val needsSide = CurbMatcher.needsSideConfirmation(matches.map { it.first }, fix.accuracyMeters)
 
+        // Which car this was, from the stereo if it spoke and from where the drive began if it did
+        // not. An Ask is recorded as an unnamed parking; the home screen puts the question.
+        val identified = vehicles.identifyDrive() as? VehicleIdentification.Identified
+        vehicles.forgetDrive()
+
         val event = ParkingEventEntity(
             id = UUID.randomUUID().toString(),
             parkedAt = fix.at.toEpochMilli(),
@@ -72,14 +80,18 @@ class ParkingRepository @Inject constructor(
             accuracyMeters = fix.accuracyMeters,
             fixQuality = fix.quality.name,
             endedBy = endedBy.name,
+            vehicleId = identified?.vehicleId,
+            vehicleEvidence = identified?.evidence?.name,
             address = reverseGeocode(fix.point),
             curbSegmentId = best?.first?.curb?.segment?.id,
             curbSideConfirmed = best?.first?.onCorrectSide == true && !needsSide,
             moveByEpochMillis = best?.second?.moveBy?.toInstant()?.toEpochMilli(),
         )
 
-        dao.clearCurrent(fix.at.toEpochMilli())
         dao.upsert(event)
+        // This car's previous spot is now history — including one a partner recorded, since the car
+        // cannot be in two streets at once.
+        dao.clearCurrentForVehicle(event.vehicleId, fix.at.toEpochMilli(), exceptId = event.id)
 
         best?.second?.moveBy?.let { reminders.schedule(event.id, it) }
         Notifications.postParked(context, event, best?.second, needsSide)
@@ -92,6 +104,17 @@ class ParkingRepository @Inject constructor(
             curbLabel = best?.first?.label(),
             needsSideConfirmation = needsSide,
         )
+    }
+
+    /**
+     * The user drove one particular car away.
+     *
+     * Per event rather than per person: with two cars parked, "I moved it" on one card must not
+     * quietly close out the other one as well.
+     */
+    suspend fun clearEvent(eventId: String, at: Instant = Instant.now()) = withContext(Dispatchers.IO) {
+        reminders.cancel(eventId)
+        dao.clearEvent(eventId, at.toEpochMilli())
     }
 
     /** The user drove away. Closes the current event and drops its reminder. */
@@ -121,6 +144,24 @@ class ParkingRepository @Inject constructor(
         )
         curb.evaluation.moveBy?.let { reminders.schedule(eventId, it) } ?: reminders.cancel(eventId)
     }
+
+    /**
+     * The user saying which car a parking was, when the app could not tell.
+     *
+     * Supersedes wherever that car was before — answering the question is exactly the moment the
+     * old record becomes wrong — and shares the spot if auto-share is on, since a parking nobody
+     * could name was not worth sending until now.
+     */
+    suspend fun assignVehicle(eventId: String, vehicleId: String) = withContext(Dispatchers.IO) {
+        val event = dao.byId(eventId) ?: return@withContext
+        dao.assignVehicle(eventId, vehicleId, VehicleEvidence.STATED.name)
+        dao.clearCurrentForVehicle(vehicleId, event.parkedAt, exceptId = eventId)
+        if (event.sharedAt == null && !event.shareSuppressed && settings.readAutoShareEnabled()) {
+            share.enqueue(eventId)
+        }
+    }
+
+    fun observeActive(): Flow<List<ParkingEventEntity>> = dao.observeActive()
 
     suspend fun setNote(eventId: String, note: String?) = withContext(Dispatchers.IO) {
         dao.byId(eventId)?.let { dao.update(it.copy(note = note?.takeIf(String::isNotBlank))) }

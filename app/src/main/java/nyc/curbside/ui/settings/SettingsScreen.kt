@@ -156,6 +156,30 @@ private fun CarStereoPicker(state: SettingsUiState, viewModel: SettingsViewModel
         }
     }
 
+    // One row per car, because a household can have more than one and the whole point of naming
+    // them is knowing which one your partner just moved.
+    state.vehicles.forEach { vehicle ->
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(vehicle.name, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    if (vehicle.isShareable) {
+                        "Recognised by its stereo"
+                    } else {
+                        "No stereo — this car cannot be matched with your partner's phone"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            }
+            TextButton(onClick = { viewModel.onVehicleRemoved(vehicle.id) }) { Text("Forget") }
+        }
+    }
+
     OutlinedButton(
         onClick = {
             denied = false
@@ -166,7 +190,7 @@ private fun CarStereoPicker(state: SettingsUiState, viewModel: SettingsViewModel
             }
         },
     ) {
-        Text(if (state.carBluetoothName == null) "Choose car stereo" else "Change car stereo")
+        Text(if (state.vehicles.isEmpty()) "Add your car" else "Add another car")
     }
 
     if (denied) {
@@ -181,7 +205,7 @@ private fun CarStereoPicker(state: SettingsUiState, viewModel: SettingsViewModel
     val paired = devices ?: return
     AlertDialog(
         onDismissRequest = { devices = null },
-        title = { Text("Which one is your car?") },
+        title = { Text("Which stereo is this car?") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (paired.isEmpty()) {
@@ -193,7 +217,8 @@ private fun CarStereoPicker(state: SettingsUiState, viewModel: SettingsViewModel
                 } else {
                     Text(
                         "Pick the stereo, not your headphones: Curbside treats this device " +
-                            "disconnecting as the end of a drive.",
+                            "disconnecting as the end of a drive. It is also how the car is told " +
+                            "apart from the other one, on both your phones.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.outline,
                     )
@@ -204,7 +229,7 @@ private fun CarStereoPicker(state: SettingsUiState, viewModel: SettingsViewModel
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    viewModel.onCarStereoChosen(device.address, device.label)
+                                    viewModel.onVehicleAdded(device.address, device.label)
                                     devices = null
                                 }
                                 .padding(vertical = 12.dp),
@@ -215,16 +240,6 @@ private fun CarStereoPicker(state: SettingsUiState, viewModel: SettingsViewModel
         },
         confirmButton = {
             TextButton(onClick = { devices = null }) { Text("Cancel") }
-        },
-        dismissButton = {
-            if (state.carBluetoothName != null) {
-                TextButton(
-                    onClick = {
-                        viewModel.onCarStereoChosen(null, null)
-                        devices = null
-                    },
-                ) { Text("Forget") }
-            }
         },
     )
 }

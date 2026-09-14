@@ -44,10 +44,11 @@ object AppModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): CurbsideDatabase =
         Room.databaseBuilder(context, CurbsideDatabase::class.java, CurbsideDatabase.NAME)
-            // The curb table is a cache of a public dataset; it can always be re-downloaded, and a
-            // destructive migration is far preferable to shipping a migration for 150k rows of data
-            // the pipeline can regenerate. Parking history is the part that matters, and it is
-            // small enough to migrate properly when the schema changes.
+            // Everything in here can be rebuilt. The curb table is a cache of a public dataset and
+            // the APK carries a seed of it; parking history is the part that would hurt to lose,
+            // and there is none yet. Until there is a user with a history worth keeping, a dropped
+            // table on a schema change is cheaper than a migration nobody has run.
+            .fallbackToDestructiveMigration()
             .build()
 
     @Provides fun provideParkingDao(db: CurbsideDatabase): ParkingEventDao = db.parkingEvents()

@@ -14,6 +14,8 @@ import kotlinx.coroutines.launch
 import nyc.curbside.asp.AspDatasetInstaller
 import nyc.curbside.asp.NYC
 import nyc.curbside.asp.SuspensionRepository
+import nyc.curbside.data.Vehicle
+import nyc.curbside.data.VehicleRepository
 import nyc.curbside.data.CurbsideSettings
 import nyc.curbside.data.db.CurbSegmentDao
 import nyc.curbside.detect.CarBluetoothReceiver
@@ -25,6 +27,8 @@ data class SettingsUiState(
     val transitionsRegistered: Boolean = false,
     val androidAutoSeen: Boolean = false,
     val carBluetoothName: String? = null,
+    /** The household's cars. Empty until one is nominated on this screen. */
+    val vehicles: List<Vehicle> = emptyList(),
     val householdId: String? = null,
     val autoShare: Boolean = false,
     /** False when the build carries no Firebase config; the sharing card says so and offers nothing. */
@@ -45,19 +49,21 @@ class SettingsViewModel @Inject constructor(
     private val installer: AspDatasetInstaller,
     private val suspensions: SuspensionRepository,
     private val curbDao: CurbSegmentDao,
+    private val vehicles: VehicleRepository,
 ) : ViewModel() {
 
     private val local = MutableStateFlow(SettingsUiState(sharingAvailable = household.isAvailable))
 
     val state: StateFlow<SettingsUiState> = combine(
-        settings.carBluetoothName,
+        vehicles.vehicles,
         settings.householdId,
         settings.autoShareEnabled,
         settings.aspDatasetVersion,
         local,
-    ) { stereo, householdId, autoShare, version, base ->
+    ) { cars, householdId, autoShare, version, base ->
         base.copy(
-            carBluetoothName = stereo,
+            vehicles = cars,
+            carBluetoothName = cars.firstOrNull()?.name,
             householdId = householdId,
             autoShare = autoShare,
             datasetVersion = version,
@@ -138,8 +144,16 @@ class SettingsViewModel @Inject constructor(
      * headphones came off", so [CarBluetoothReceiver] ignores every other device. Passing null
      * forgets it and falls back to motion sensing alone.
      */
-    fun onCarStereoChosen(address: String?, name: String?) {
-        viewModelScope.launch { settings.setCarBluetooth(address, name) }
+    fun onVehicleAdded(address: String, name: String) {
+        viewModelScope.launch { vehicles.add(Vehicle.fromStereo(address, name)) }
+    }
+
+    fun onVehicleRemoved(id: String) {
+        viewModelScope.launch { vehicles.remove(id) }
+    }
+
+    fun onVehicleRenamed(id: String, name: String) {
+        viewModelScope.launch { vehicles.rename(id, name) }
     }
 
     fun onRefreshData() {

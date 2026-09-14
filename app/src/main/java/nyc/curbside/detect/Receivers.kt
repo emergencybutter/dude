@@ -83,11 +83,14 @@ class ActivityTransitionReceiver : CoroutineBroadcastReceiver() {
 }
 
 /**
- * The car stereo pairing or dropping.
+ * A car stereo pairing or dropping.
  *
- * Only the device the user nominated in Settings counts. Without that filter every pair of
- * headphones in the city would look like a car, and a walk to the subway with earbuds in would drop
- * a parking pin on the pavement.
+ * Only devices nominated in Settings count. Without that filter every pair of headphones in the
+ * city would look like a car, and a walk to the subway with earbuds in would drop a parking pin on
+ * the pavement.
+ *
+ * Which stereo it was is recorded, not just that it was one of ours: with two cars in a household
+ * the address is the only thing that says whose drive this is.
  */
 @AndroidEntryPoint
 class CarBluetoothReceiver : CoroutineBroadcastReceiver() {
@@ -108,7 +111,9 @@ class CarBluetoothReceiver : CoroutineBroadcastReceiver() {
         val address = device?.address ?: return
 
         goAsyncIn {
-            if (address != settings.readCarBluetoothAddress()) return@goAsyncIn
+            val vehicle = settings.readVehicles().firstOrNull { it.bluetoothAddress == address }
+                ?: return@goAsyncIn
+            if (kind == SignalKind.DRIVE_STARTED) settings.setDriveStereo(vehicle.bluetoothAddress)
             coordinator.onSignal(DriveSignal(SignalSource.CAR_BLUETOOTH, kind, Instant.now()))
         }
     }

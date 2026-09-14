@@ -29,6 +29,7 @@ object Notifications {
     const val PARKED_NOTIFICATION_ID = 2
     const val MOVE_NOTIFICATION_ID = 3
     const val SHARED_NOTIFICATION_ID = 4
+    const val MOVED_NOTIFICATION_ID = 6
     const val FAILED_NOTIFICATION_ID = 5
 
     private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("h:mm a")
@@ -124,13 +125,42 @@ object Notifications {
         )
     }
 
-    fun postSharedByPartner(context: Context, partnerName: String, where: String) {
+    fun postSharedByPartner(
+        context: Context,
+        partnerName: String,
+        where: String,
+        carName: String? = null,
+    ) {
+        val title = carName
+            ?.let { context.getString(R.string.notification_partner_parked_car, partnerName, it) }
+            ?: context.getString(R.string.notification_partner_parked, partnerName)
+
         notify(
             context,
             SHARED_NOTIFICATION_ID,
             NotificationCompat.Builder(context, CHANNEL_SHARED)
                 .setSmallIcon(R.drawable.ic_pin)
-                .setContentTitle(context.getString(R.string.notification_partner_parked, partnerName))
+                .setContentTitle(title)
+                .setContentText(where)
+                .setContentIntent(openApp(context))
+                .setAutoCancel(true)
+                .build(),
+        )
+    }
+
+    /**
+     * A car you were holding a spot for has turned up somewhere else, left by someone else.
+     *
+     * Its own notification id, so it never silently replaces an ordinary "partner parked": being
+     * told your car has moved is the one message in this app you would be annoyed to miss.
+     */
+    fun postPartnerMovedCar(context: Context, partnerName: String, carName: String, where: String) {
+        notify(
+            context,
+            MOVED_NOTIFICATION_ID,
+            NotificationCompat.Builder(context, CHANNEL_SHARED)
+                .setSmallIcon(R.drawable.ic_pin)
+                .setContentTitle(context.getString(R.string.notification_partner_moved_car, partnerName, carName))
                 .setContentText(where)
                 .setContentIntent(openApp(context))
                 .setAutoCancel(true)

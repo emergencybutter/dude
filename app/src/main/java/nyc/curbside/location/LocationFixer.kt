@@ -79,6 +79,28 @@ class LocationFixer @Inject constructor(
         return breadcrumbFix(now)
     }
 
+    /**
+     * Whatever position the phone already had, for telling one car from another at the start of a
+     * drive. Turns nothing on and waits for nothing — an absent or stale answer simply means the
+     * app has to ask which car this was.
+     */
+    suspend fun lastKnown(now: Instant = Instant.now()): Fix? {
+        if (!hasLocationPermission()) return null
+        val last = runCatching { client.lastLocation.await() }.getOrNull() ?: return null
+
+        if (Duration.between(Instant.ofEpochMilli(last.time), now) > ORIGIN_MAX_AGE) return null
+        val accuracy = if (last.hasAccuracy()) last.accuracy else Float.MAX_VALUE
+        // A fix this coarse names a neighbourhood, and both cars are probably in it.
+        if (accuracy > ORIGIN_MAX_ACCURACY_METERS) return null
+
+        return Fix(
+            point = LatLng(last.latitude, last.longitude),
+            accuracyMeters = accuracy,
+            quality = FixQuality.RECENT_CACHED,
+            at = Instant.ofEpochMilli(last.time),
+        )
+    }
+
     /** The free option: whatever fix the system already has, if it is fresh and tight enough. */
     private suspend fun cachedFix(now: Instant): Fix? {
         val last = runCatching { client.lastLocation.await() }.getOrNull() ?: return null
@@ -139,6 +161,13 @@ class LocationFixer @Inject constructor(
         val TIMEOUT_GRACE: Duration = Duration.ofSeconds(5)
         val CACHE_MAX_AGE: Duration = Duration.ofSeconds(30)
         val BREADCRUMB_MAX_AGE: Duration = Duration.ofMinutes(15)
+
+        /**
+         * How stale the phone's cached position may be and still say where a drive began. Past
+         * this it is where you were, not where the car was.
+         */
+        val ORIGIN_MAX_AGE: Duration = Duration.ofMinutes(15)
+        const val ORIGIN_MAX_ACCURACY_METERS = 200f
 
         /** Tight enough to trust without spending anything to improve it. */
         const val CACHE_MAX_ACCURACY_METERS = 25f

@@ -5,7 +5,7 @@ import androidx.room.RoomDatabase
 
 @Database(
     entities = [ParkingEventEntity::class, CurbSegmentEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class CurbsideDatabase : RoomDatabase() {
