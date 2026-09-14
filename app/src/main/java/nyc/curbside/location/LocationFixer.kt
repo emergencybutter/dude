@@ -27,6 +27,13 @@ enum class FixQuality {
     RECENT_CACHED,
 
     /**
+     * A fix too vague to say which block the car is on, kept only because it is better than
+     * nothing. Never presented as the car's position: the UI calls it approximate and asks the
+     * user to place the pin, and no curb rules are attributed to it.
+     */
+    COARSE,
+
+    /**
      * The last position seen for free while driving. Used when the live fix fails or is hopeless,
      * which in practice means a parking garage. Off by however far the car travelled after the last
      * open-sky moment, so the UI labels it "approximate".
@@ -117,15 +124,21 @@ class LocationFixer @Inject constructor(
         )
     }
 
-    /** The one expensive call in the app. */
+    /**
+     * The one expensive call in the app.
+     *
+     * Deliberately does not accept a stale fix. It used to allow one up to [CACHE_MAX_AGE] old, on
+     * the reasoning that a recent navigation fix would come back instantly — but [cachedFix] has
+     * already looked at exactly that location and rejected it, and letting it back in here handed
+     * the caller the very fix the accuracy gate had just refused, restamped as [FixQuality.GPS].
+     * A couple of seconds is enough to reuse a fix that landed while this was being set up.
+     */
     private suspend fun currentFix(now: Instant): Fix? {
         val request = CurrentLocationRequest.Builder()
             .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
             .setGranularity(Granularity.GRANULARITY_FINE)
             .setDurationMillis(FIX_TIMEOUT.toMillis())
-            // Accept a fix up to half a minute old rather than forcing a new one; on a street with
-            // sky this usually returns instantly from the last navigation fix.
-            .setMaxUpdateAgeMillis(CACHE_MAX_AGE.toMillis())
+            .setMaxUpdateAgeMillis(CURRENT_MAX_AGE.toMillis())
             .build()
 
         val location = withTimeoutOrNull(FIX_TIMEOUT.toMillis() + TIMEOUT_GRACE.toMillis()) {
@@ -139,7 +152,10 @@ class LocationFixer @Inject constructor(
         return Fix(
             point = LatLng(location.latitude, location.longitude),
             accuracyMeters = accuracy,
-            quality = FixQuality.GPS,
+            // Reported accuracy is a 68% confidence radius, not a bound: a fix claiming forty
+            // metres is routinely out by several times that. Anything past the trusted threshold
+            // cannot name a block, so it is recorded as a guess rather than as the car.
+            quality = if (accuracy <= TRUSTED_ACCURACY_METERS) FixQuality.GPS else FixQuality.COARSE,
             at = now,
         )
     }
@@ -160,6 +176,9 @@ class LocationFixer @Inject constructor(
         val FIX_TIMEOUT: Duration = Duration.ofSeconds(20)
         val TIMEOUT_GRACE: Duration = Duration.ofSeconds(5)
         val CACHE_MAX_AGE: Duration = Duration.ofSeconds(30)
+
+        /** Fresh means fresh. Long enough only to reuse a fix that arrived moments ago. */
+        val CURRENT_MAX_AGE: Duration = Duration.ofSeconds(2)
         val BREADCRUMB_MAX_AGE: Duration = Duration.ofMinutes(15)
 
         /**
@@ -172,7 +191,16 @@ class LocationFixer @Inject constructor(
         /** Tight enough to trust without spending anything to improve it. */
         const val CACHE_MAX_ACCURACY_METERS = 25f
 
-        /** Beyond this the fix says nothing useful about which block the car is on. */
-        const val USABLE_ACCURACY_METERS = 100f
+        /**
+         * The most error a fix may claim and still be called the car's position.
+         *
+         * A city block is around eighty metres and a street a dozen wide, so a fix reporting worse
+         * than this cannot pick the block, never mind the side. It used to be a hundred metres,
+         * which is a different street.
+         */
+        const val TRUSTED_ACCURACY_METERS = 30f
+
+        /** Past this, even as a guess it is worthless and the breadcrumb is the better answer. */
+        const val USABLE_ACCURACY_METERS = 60f
     }
 }

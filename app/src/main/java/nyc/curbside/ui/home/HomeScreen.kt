@@ -241,6 +241,9 @@ private fun countdownText(row: ParkedCarRow): String {
 private fun accuracyNote(car: ParkingEventEntity): String = when (car.fixQuality) {
     "BREADCRUMB" -> " · approximate, last position before you lost signal"
     "MANUAL" -> " · pin you dropped"
+    // Not "accurate to about 47m": that reads as a promise, and the number is a 68% confidence
+    // radius the true error regularly exceeds. A fix this vague is a guess and should look like one.
+    "COARSE" -> " · rough guess only, the fix was poor"
     else -> " · accurate to about ${car.accuracyMeters.toInt()}m"
 }
 

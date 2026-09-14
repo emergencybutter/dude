@@ -54,6 +54,8 @@ class ParkingCaptureWorker @AssistedInject constructor(
             return Result.failure()
         }
 
+        // Null means the drive was judged never to have happened — a walk that activity
+        // recognition called a car trip. The previous spot, which is still the right one, stands.
         parking.recordParking(fix, endedBy)
         return Result.success()
     }

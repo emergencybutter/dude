@@ -24,6 +24,7 @@
     <string name="notification_partner_moved_car">%1$s moved the %2$s</string>
 
     <string name="notification_failed_title">Could not find your car</string>
+    <string name="notification_rough_fix">Rough position only — open Curbside to place the pin properly.</string>
     <string name="notification_failed_text">No usable location at the end of that drive. Open Curbside to drop a pin.</string>
 
     <string name="share_subject">Where the car is</string>

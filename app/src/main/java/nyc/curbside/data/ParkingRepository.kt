@@ -3,6 +3,7 @@ package nyc.curbside.data
 import android.content.Context
 import android.location.Geocoder
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.time.Duration
 import java.time.Instant
 import java.time.ZonedDateTime
 import java.util.UUID
@@ -15,10 +16,12 @@ import nyc.curbside.asp.AspRepository
 import nyc.curbside.asp.CurbEvaluation
 import nyc.curbside.asp.CurbMatch
 import nyc.curbside.asp.CurbMatcher
+import nyc.curbside.asp.Geo
 import nyc.curbside.asp.LatLng
 import nyc.curbside.asp.NYC
 import nyc.curbside.data.db.ParkingEventDao
 import nyc.curbside.data.db.ParkingEventEntity
+import nyc.curbside.drive.DrivePlausibility
 import nyc.curbside.drive.SignalSource
 import nyc.curbside.drive.VehicleEvidence
 import nyc.curbside.drive.VehicleIdentification
@@ -62,8 +65,22 @@ class ParkingRepository @Inject constructor(
         fix: Fix,
         endedBy: SignalSource,
         now: ZonedDateTime = ZonedDateTime.now(NYC),
-    ): ParkedCar = withContext(Dispatchers.IO) {
-        val matches = asp.matchCurb(fix.point, fix.accuracyMeters, now)
+    ): ParkedCar? = withContext(Dispatchers.IO) {
+        // Did a car go anywhere? Activity recognition sometimes calls a walk a vehicle trip, and
+        // the pin that follows lands wherever the walk ended — replacing a spot that was right.
+        val origin = settings.readDriveOrigin()
+        val travelled = origin?.let { Geo.haversineMeters(LatLng(it.latitude, it.longitude), fix.point) }
+        val took = origin?.let { Duration.between(it.at, fix.at) }
+        if (DrivePlausibility.looksLikeWalking(travelled, took, endedBy)) {
+            vehicles.forgetDrive()
+            return@withContext null
+        }
+
+        // A fix that cannot name a block gets no rules hung on it. Matching a curb four hundred
+        // metres from the car would produce a confident sweeping time for a street it is not on,
+        // and a reminder to move it from a space it never occupied.
+        val locatable = fix.quality != FixQuality.COARSE
+        val matches = if (locatable) asp.matchCurb(fix.point, fix.accuracyMeters, now) else emptyList()
         val best = matches.firstOrNull()
         val needsSide = CurbMatcher.needsSideConfirmation(matches.map { it.first }, fix.accuracyMeters)
 
@@ -173,11 +190,13 @@ class ParkingRepository @Inject constructor(
 
     /** Drops a pin by hand, for the times detection missed or the user parked someone else's car. */
     suspend fun recordManual(point: LatLng, now: ZonedDateTime = ZonedDateTime.now(NYC)): ParkedCar =
+        // Never null: a pin the user placed by hand is not second-guessed, and the walking check
+        // only ever doubts activity recognition.
         recordParking(
             fix = Fix(point, MANUAL_ACCURACY_METERS, FixQuality.MANUAL, now.toInstant()),
             endedBy = SignalSource.MANUAL,
             now = now,
-        )
+        )!!
 
     /**
      * Street address for the pin, best effort.

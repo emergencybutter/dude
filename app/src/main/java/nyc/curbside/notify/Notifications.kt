@@ -69,6 +69,9 @@ object Notifications {
     ) {
         val where = event.address ?: context.getString(R.string.notification_parked_fallback)
         val detail = when {
+            // Say so first. A bad fix is not a detail to mention after the sweeping time — it is
+            // the reason the sweeping time is not being offered.
+            event.fixQuality == "COARSE" -> context.getString(R.string.notification_rough_fix)
             needsSideConfirmation -> context.getString(R.string.notification_confirm_side)
             evaluation == null -> null
             evaluation.status == CurbStatus.UNKNOWN -> context.getString(R.string.notification_no_rules)
