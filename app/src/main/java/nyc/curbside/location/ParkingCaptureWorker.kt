@@ -7,6 +7,7 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
+import java.time.Duration
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import nyc.curbside.data.ParkingRepository
@@ -46,6 +47,14 @@ class ParkingCaptureWorker @AssistedInject constructor(
             ?.let { runCatching { SignalSource.valueOf(it) }.getOrNull() }
             ?: SignalSource.ACTIVITY_RECOGNITION
 
+        // How long the drive actually lasted, as the state machine measured it. The plausibility
+        // check needs this rather than a duration derived from the origin fix: that fix is whatever
+        // the phone had cached and may be a quarter of an hour old, which stretches the apparent
+        // trip time and makes a real drive look like walking pace.
+        val droveFor = inputData.getLong(KEY_DROVE_FOR_SECONDS, -1L)
+            .takeIf { it >= 0 }
+            ?.let(Duration::ofSeconds)
+
         val fix = fixer.capture()
         if (fix == null) {
             // No fix and no breadcrumb. Retrying later would pin the car wherever the phone is by
@@ -56,7 +65,7 @@ class ParkingCaptureWorker @AssistedInject constructor(
 
         // Null means the drive was judged never to have happened — a walk that activity
         // recognition called a car trip. The previous spot, which is still the right one, stands.
-        parking.recordParking(fix, endedBy)
+        parking.recordParking(fix, endedBy, droveFor = droveFor)
         return Result.success()
     }
 

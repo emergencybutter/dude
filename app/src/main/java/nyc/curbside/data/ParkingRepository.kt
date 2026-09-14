@@ -61,17 +61,23 @@ class ParkingRepository @Inject constructor(
      *
      * The previous parking is closed out rather than deleted, so the history survives.
      */
+    /**
+     * @param droveFor how long the drive lasted, from the state machine. Not derived from the
+     *   origin fix's own timestamp: that fix is whatever the phone had cached when the drive began
+     *   and can be fifteen minutes old, which would stretch the apparent trip and make a real drive
+     *   look like a walk.
+     */
     suspend fun recordParking(
         fix: Fix,
         endedBy: SignalSource,
         now: ZonedDateTime = ZonedDateTime.now(NYC),
+        droveFor: Duration? = null,
     ): ParkedCar? = withContext(Dispatchers.IO) {
         // Did a car go anywhere? Activity recognition sometimes calls a walk a vehicle trip, and
         // the pin that follows lands wherever the walk ended — replacing a spot that was right.
         val origin = settings.readDriveOrigin()
         val travelled = origin?.let { Geo.haversineMeters(LatLng(it.latitude, it.longitude), fix.point) }
-        val took = origin?.let { Duration.between(it.at, fix.at) }
-        if (DrivePlausibility.looksLikeWalking(travelled, took, endedBy)) {
+        if (DrivePlausibility.looksLikeWalking(travelled, droveFor, endedBy)) {
             vehicles.forgetDrive()
             return@withContext null
         }

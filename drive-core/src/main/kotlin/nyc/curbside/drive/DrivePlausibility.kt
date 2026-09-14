@@ -31,10 +31,14 @@ object DrivePlausibility {
     /**
      * Only trips shorter than this are second-guessed.
      *
-     * A long trip that averaged walking pace really was a long gridlocked drive; nobody walks five
-     * kilometres and calls it parking. The failure being guarded against is always short.
+     * Deliberately short. Discarding a parking is destructive — the car really is somewhere new and
+     * the app will keep pointing at the old spot — so this only covers distances a person plausibly
+     * walks while their phone calls it driving. The case this exists for covered 369 metres; a
+     * drive of half a kilometre or more is never second-guessed however slowly it went.
+     *
+     * It was a kilometre, and that ate a real drive.
      */
-    const val MAX_SUSPECT_DISTANCE_METERS: Double = 1_000.0
+    const val MAX_SUSPECT_DISTANCE_METERS: Double = 500.0
 
     /**
      * True when this "drive" looks like somebody walking.
