@@ -35,6 +35,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import nyc.curbside.ui.CarStereoChooser
+import nyc.curbside.ui.hasBluetoothPermission
+import nyc.curbside.ui.carStereos
+import nyc.curbside.ui.BLUETOOTH_PERMISSION
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable
@@ -109,53 +113,8 @@ private fun DetectionCard(
     }
 }
 
-/** A paired device, read once when the dialog opens. */
-private data class PairedDevice(val address: String, val label: String, val audio: Boolean)
-
-/**
- * Connecting to BLUETOOTH_CONNECT is needed to read so much as the name of a paired device on
- * API 31+, so the button asks for it and only then opens the list. Below 31 the install-time
- * BLUETOOTH permission covers it and the request resolves immediately.
- */
-private val BLUETOOTH_PERMISSION: Array<String> =
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) arrayOf(Manifest.permission.BLUETOOTH_CONNECT) else emptyArray()
-
-private fun hasBluetoothPermission(context: Context): Boolean = BLUETOOTH_PERMISSION.all {
-    ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
-}
-
-private fun pairedDevices(context: Context): List<PairedDevice> = runCatching {
-    val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter ?: return emptyList()
-    adapter.bondedDevices.orEmpty()
-        .map {
-            PairedDevice(
-                address = it.address,
-                label = it.name?.takeIf(String::isNotBlank) ?: it.address,
-                audio = it.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.AUDIO_VIDEO,
-            )
-        }
-        // Audio devices first, since one of them is the answer, but nothing is hidden: plenty of
-        // head units report an odd device class, and a list that omits the user's car is useless.
-        .sortedWith(compareByDescending<PairedDevice> { it.audio }.thenBy { it.label.lowercase() })
-}.getOrDefault(emptyList())
-
 @Composable
 private fun CarStereoPicker(state: SettingsUiState, viewModel: SettingsViewModel) {
-    val context = LocalContext.current
-    var devices by remember { mutableStateOf<List<PairedDevice>?>(null) }
-    var denied by remember { mutableStateOf(false) }
-
-    val request = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions(),
-    ) { result ->
-        if (result.values.all { it }) {
-            devices = pairedDevices(context)
-            denied = false
-        } else {
-            denied = true
-        }
-    }
-
     // One row per car, because a household can have more than one and the whole point of naming
     // them is knowing which one your partner just moved.
     state.vehicles.forEach { vehicle ->
@@ -180,68 +139,46 @@ private fun CarStereoPicker(state: SettingsUiState, viewModel: SettingsViewModel
         }
     }
 
-    OutlinedButton(
-        onClick = {
-            denied = false
-            if (hasBluetoothPermission(context)) {
-                devices = pairedDevices(context)
-            } else {
-                request.launch(BLUETOOTH_PERMISSION)
-            }
-        },
-    ) {
-        Text(if (state.vehicles.isEmpty()) "Add your car" else "Add another car")
+    // Finding beats asking: a car stereo declares itself as car audio, so the usual case needs no
+    // list at all. The manual picker stays for the head units that declare themselves badly.
+    val context = LocalContext.current
+    var searched by remember { mutableStateOf(false) }
+    val request = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        if (result.values.all { it }) {
+            carStereos(context).forEach { viewModel.onVehicleAdded(it.address, it.label) }
+            searched = true
+        }
     }
 
-    if (denied) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(
+            onClick = {
+                if (hasBluetoothPermission(context)) {
+                    carStereos(context).forEach { viewModel.onVehicleAdded(it.address, it.label) }
+                    searched = true
+                } else {
+                    request.launch(BLUETOOTH_PERMISSION)
+                }
+            },
+        ) { Text("Find my car") }
+
+        CarStereoChooser(onChosen = viewModel::onVehicleAdded) { open ->
+            OutlinedButton(onClick = open) {
+                Text(if (state.vehicles.isEmpty()) "Add by hand" else "Add another")
+            }
+        }
+    }
+
+    if (searched && state.vehicles.isEmpty()) {
         Text(
-            "Curbside needs the Bluetooth permission to read the names of your paired devices. " +
-                "Without it, drives are detected by motion alone.",
+            "Nothing among your paired devices says it is a car. Plenty of head units do not " +
+                "declare themselves properly — add yours by hand.",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
+            color = MaterialTheme.colorScheme.outline,
         )
     }
-
-    val paired = devices ?: return
-    AlertDialog(
-        onDismissRequest = { devices = null },
-        title = { Text("Which stereo is this car?") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (paired.isEmpty()) {
-                    Text(
-                        "No paired Bluetooth devices. Pair your phone with the car stereo first, " +
-                            "then come back.",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                } else {
-                    Text(
-                        "Pick the stereo, not your headphones: Curbside treats this device " +
-                            "disconnecting as the end of a drive. It is also how the car is told " +
-                            "apart from the other one, on both your phones.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.outline,
-                    )
-                    paired.forEach { device ->
-                        Text(
-                            device.label,
-                            style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    viewModel.onVehicleAdded(device.address, device.label)
-                                    devices = null
-                                }
-                                .padding(vertical = 12.dp),
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { devices = null }) { Text("Cancel") }
-        },
-    )
 }
 
 @Composable

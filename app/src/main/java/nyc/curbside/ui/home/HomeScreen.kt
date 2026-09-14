@@ -43,7 +43,11 @@ private val PARKED_AT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MM
 private val MOVE_BY: DateTimeFormatter = DateTimeFormatter.ofPattern("EEEE h:mm a")
 
 @Composable
-fun HomeScreen(onOpenMap: () -> Unit, viewModel: HomeViewModel = hiltViewModel()) {
+fun HomeScreen(
+    onOpenMap: () -> Unit,
+    onOpenSettings: () -> Unit = {},
+    viewModel: HomeViewModel = hiltViewModel(),
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
@@ -54,6 +58,10 @@ fun HomeScreen(onOpenMap: () -> Unit, viewModel: HomeViewModel = hiltViewModel()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        if (state.detectionOnMotionAlone) {
+            MotionOnlyCard(onOpenSettings)
+        }
+
         if (state.cars.isEmpty()) {
             NoCarCard(onOpenMap)
         } else {
@@ -69,6 +77,29 @@ fun HomeScreen(onOpenMap: () -> Unit, viewModel: HomeViewModel = hiltViewModel()
                     onVehicleChosen = { viewModel.onVehicleChosen(row.event.id, it) },
                 )
             }
+        }
+    }
+}
+
+/** Says plainly that the most reliable signal is switched off, and offers to switch it on. */
+@Composable
+private fun MotionOnlyCard(onOpenSettings: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Detection is running on motion alone", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Curbside is watching your phone's motion sensor for the start and end of a " +
+                    "drive. That works, but it is slower than the alternative, it can mistake a " +
+                    "walk for a drive, and it cannot tell one car from another.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                "Pick your car stereo and Curbside knows a drive ended the moment the stereo " +
+                    "drops — the ignition going off, rather than a guess.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            TextButton(onClick = onOpenSettings) { Text("Choose car stereo") }
         }
     }
 }

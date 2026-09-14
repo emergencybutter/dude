@@ -54,7 +54,17 @@ data class HomeUiState(
     val cars: List<ParkedCarRow> = emptyList(),
     val vehicles: List<Vehicle> = emptyList(),
     val autoShareEnabled: Boolean = false,
-)
+) {
+    /**
+     * True when no car has a stereo nominated, so drives are being detected by motion alone.
+     *
+     * Worth saying on the main screen rather than leaving to be discovered: motion is the weakest
+     * of the three signals, it is slower than an ignition-accurate one, it occasionally reads a
+     * walk as a drive, and it cannot tell one car from another. Android Auto does not make up for
+     * it — that state is readable only while the app is open, which it is not when a drive starts.
+     */
+    val detectionOnMotionAlone: Boolean get() = vehicles.none { it.bluetoothAddress != null }
+}
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(

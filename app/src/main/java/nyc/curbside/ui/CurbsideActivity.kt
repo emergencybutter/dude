@@ -131,7 +131,12 @@ private fun CurbsideNav(onReviewPermissions: () -> Unit) {
             startDestination = Destination.HOME.route,
             modifier = Modifier.padding(padding),
         ) {
-            composable(Destination.HOME.route) { HomeScreen(onOpenMap = { navController.navigate(Destination.MAP.route) }) }
+            composable(Destination.HOME.route) {
+                HomeScreen(
+                    onOpenMap = { navController.navigate(Destination.MAP.route) },
+                    onOpenSettings = { navController.navigate(Destination.SETTINGS.route) },
+                )
+            }
             composable(Destination.MAP.route) { MapScreen() }
             composable(Destination.SETTINGS.route) {
                 SettingsScreen(onReviewPermissions = onReviewPermissions)

@@ -26,6 +26,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import nyc.curbside.ui.hasBluetoothPermission
+import nyc.curbside.ui.carStereos
+import nyc.curbside.ui.PairedDevice
+import nyc.curbside.ui.BLUETOOTH_PERMISSION
+import nyc.curbside.ui.CarStereoChooser
 
 /**
  * Explains what Curbside asks for before Android asks for it.
@@ -38,7 +43,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
  * It is shown once, and reachable again from Settings. Declining is a real option and leaves the
  * app working in a reduced form, which the summary spells out rather than hiding.
  */
-private enum class Stage { EXPLAIN, BACKGROUND, SUMMARY }
+private enum class Stage { EXPLAIN, BACKGROUND, STEREO, SUMMARY }
 
 @Composable
 fun PermissionsScreen(
@@ -48,6 +53,7 @@ fun PermissionsScreen(
     val context = LocalContext.current
 
     var stage by remember { mutableStateOf(Stage.EXPLAIN) }
+    var stereos by remember { mutableStateOf<List<String>>(emptyList()) }
     var granted by remember { mutableStateOf(Ask.entries.associateWith { it.isGranted(context) }) }
 
     // Also the return path from the system settings page, where the background permission has to be
@@ -68,7 +74,7 @@ fun PermissionsScreen(
         stage = if (granted[Ask.LOCATION] == true && granted[Ask.BACKGROUND] == false) {
             Stage.BACKGROUND
         } else {
-            Stage.SUMMARY
+            Stage.STEREO
         }
     }
 
@@ -76,7 +82,7 @@ fun PermissionsScreen(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) {
         granted = Ask.entries.associateWith { ask -> ask.isGranted(context) }
-        stage = Stage.SUMMARY
+        stage = Stage.STEREO
     }
 
     val finish = {
@@ -113,12 +119,25 @@ fun PermissionsScreen(
                 onContinue = {
                     if (backgroundNeedsSettings()) {
                         context.startActivity(appSettingsIntent(context))
-                        stage = Stage.SUMMARY
+                        stage = Stage.STEREO
                     } else {
                         backgroundRequest.launch(Ask.BACKGROUND.request)
                     }
                 },
-                onSkip = { stage = Stage.SUMMARY },
+                onSkip = { stage = Stage.STEREO },
+            )
+
+            Stage.STEREO -> CarStereo(
+                cars = stereos,
+                onFound = { found ->
+                    stereos = (stereos + found.map { it.label }).distinct()
+                    found.forEach { viewModel.onCarStereoChosen(it.address, it.label) }
+                },
+                onChosen = { address, label ->
+                    stereos = (stereos + label).distinct()
+                    viewModel.onCarStereoChosen(address, label)
+                },
+                onContinue = { stage = Stage.SUMMARY },
             )
 
             Stage.SUMMARY -> Summary(
@@ -220,6 +239,118 @@ private fun Background(onContinue: () -> Unit, onSkip: () -> Unit) {
         Text(if (backgroundNeedsSettings()) "Open settings" else "Continue")
     }
     TextButton(onClick = onSkip, modifier = Modifier.fillMaxWidth()) { Text("Skip this one") }
+}
+
+/**
+ * Finding the car, while the user is still setting the app up.
+ *
+ * This used to live only in Settings, on the reasoning that Bluetooth should be asked for where it
+ * is used. The effect was that anyone who never went looking detected drives by motion alone — the
+ * weakest of the three signals, the one that mistakes a walk for a drive, and the only one running
+ * for most people.
+ *
+ * It does not ask the user to identify their stereo in a list of earbuds and speakers if it can
+ * avoid it. Bluetooth devices declare what they are, and there is a class reserved for car audio,
+ * so the usual case is that the car announces itself and all that is left is to confirm it.
+ */
+@Composable
+private fun CarStereo(
+    cars: List<String>,
+    onFound: (List<PairedDevice>) -> Unit,
+    onChosen: (address: String, label: String) -> Unit,
+    onContinue: () -> Unit,
+) {
+    val context = LocalContext.current
+    var searched by remember { mutableStateOf(false) }
+    var denied by remember { mutableStateOf(false) }
+
+    fun search() {
+        onFound(carStereos(context))
+        searched = true
+    }
+
+    val request = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        if (result.values.all { it }) {
+            denied = false
+            search()
+        } else {
+            denied = true
+        }
+    }
+
+    Text("Which car is yours?", style = MaterialTheme.typography.headlineSmall)
+    Text(
+        "Curbside knows a drive has ended the moment your car stereo drops — that is the ignition " +
+            "going off, not a guess from how the phone is moving. It is also how one car is told " +
+            "from another.",
+        style = MaterialTheme.typography.bodyMedium,
+    )
+
+    when {
+        cars.isNotEmpty() -> {
+            Text(
+                if (cars.size == 1) "Found your car" else "Found your cars",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            cars.forEach { name ->
+                Text("✓ $name", style = MaterialTheme.typography.bodyLarge)
+            }
+            Text(
+                "Wrong, or missing one? Add or forget cars any time under Settings.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+        }
+
+        searched -> Text(
+            "Nothing among your paired devices says it is a car. Plenty of head units do not " +
+                "declare themselves properly, so pick yours from the list — the stereo, not your " +
+                "headphones.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+
+        else -> Text(
+            "Curbside can find it: your paired devices say what they are, and a car stereo " +
+                "announces itself as one.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+    }
+
+    if (denied) {
+        Text(
+            "Without the Bluetooth permission Curbside cannot read your paired devices, and " +
+                "drives are detected by motion alone.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
+
+    if (cars.isEmpty() && !searched) {
+        Button(
+            onClick = {
+                denied = false
+                if (hasBluetoothPermission(context)) search() else request.launch(BLUETOOTH_PERMISSION)
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Find my car")
+        }
+    }
+
+    // The manual list stays available: a head unit that declares itself badly is common enough
+    // that finding nothing must never be a dead end.
+    if (cars.isEmpty() && searched || denied) {
+        CarStereoChooser(onChosen = onChosen) { open ->
+            Button(onClick = open, modifier = Modifier.fillMaxWidth()) { Text("Choose it myself") }
+        }
+    }
+
+    TextButton(onClick = onContinue, modifier = Modifier.fillMaxWidth()) {
+        Text(if (cars.isEmpty()) "Skip for now" else "Continue")
+    }
 }
 
 @Composable
