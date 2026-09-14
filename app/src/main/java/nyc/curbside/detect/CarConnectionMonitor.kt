@@ -51,9 +51,16 @@ class CarConnectionMonitor @Inject constructor(
         val newObserver = Observer<Int> { type ->
             val previous = lastType
             lastType = type
-            if (previous == null || previous == type) return@Observer
+            if (previous == type) return@Observer
 
             val kind = when {
+                // The first value is the state of the world as we find it, not an edge. Swallowing
+                // it wholesale meant that opening the app with the head unit already plugged in
+                // said nothing at all — and since this observer only lives as long as the activity,
+                // "already plugged in" is the normal way for it to start. If a car is connected the
+                // moment we begin watching, a drive is under way; the state machine ignores a start
+                // it already knows about, so saying so costs nothing when it is not news.
+                previous == null -> if (isConnected(type)) SignalKind.DRIVE_STARTED else null
                 isConnected(type) && !isConnected(previous) -> SignalKind.DRIVE_STARTED
                 !isConnected(type) && isConnected(previous) -> SignalKind.DRIVE_ENDED
                 else -> null
