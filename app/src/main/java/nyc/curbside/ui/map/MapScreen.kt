@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -38,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -143,6 +146,17 @@ fun MapScreen(viewModel: MapViewModel = hiltViewModel()) {
     }
 }
 
+/**
+ * Where each car sits on screen, in pixels, recomputed as the camera moves.
+ *
+ * The car markers are drawn in Compose on top of the map rather than as a MapLibre layer. A circle
+ * layer and a symbol layer, both bound to a source holding a point in view, both reported visible
+ * with sane properties, rendered nothing at all — while the curb line layers on an identical
+ * arrangement drew fine. For a handful of markers, projecting the coordinates and drawing them
+ * ourselves is less machinery than the layer it replaces, and it cannot fail silently.
+ */
+private data class ScreenPin(val car: CarPin, val x: Float, val y: Float)
+
 @Composable
 private fun AspMap(
     curbs: List<nyc.curbside.asp.EvaluatedCurb>,
@@ -159,10 +173,25 @@ private fun AspMap(
     // capturing the lambda directly would pin the first one forever.
     val currentOnTap by rememberUpdatedState(onTap)
     val currentOnLongPress by rememberUpdatedState(onLongPress)
+    val currentCars by rememberUpdatedState(cars)
+
+    // `update` runs on every recomposition, and `map.style` stays null for the whole second or so
+    // the style takes to load — so several passes each saw "no style yet" and each called setStyle.
+    // Two style loads then race, every one of them adding the same sources and layers, and what
+    // survives is bound to whichever source lost. Ask once.
+    val styleRequested = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+
     val mapView = remember {
         MapLibre.getInstance(context)
         MapView(context)
     }
+
+    // Declared after MapLibre.getInstance, and that ordering is load-bearing: constructing any
+    // MapLibre object before the SDK is initialised throws "ThreadUtils isn't correctly
+    // initialised". The source is held rather than looked up by id, because getSourceAs returned
+    // one the style acknowledged but that setGeoJson never reached — features went in and the
+    // map's own count of the source stayed at zero while the curb source filled normally.
+    var screenPins by remember { mutableStateOf<List<ScreenPin>>(emptyList()) }
 
     // Foreground location, asked for here rather than at launch: opening a map of where you may
     // park is the moment showing where you are first makes sense. Refusing it costs the blue dot
@@ -186,12 +215,13 @@ private fun AspMap(
         }
     }
 
+    Box(Modifier.fillMaxSize()) {
     AndroidView(
         factory = { mapView },
         modifier = Modifier.fillMaxSize(),
         update = { view ->
             view.getMapAsync { map ->
-                if (map.style == null) {
+                if (map.style == null && styleRequested.compareAndSet(false, true)) {
                     map.cameraPosition = CameraPosition.Builder()
                         .target(DEFAULT_CENTER)
                         .zoom(DEFAULT_ZOOM)
@@ -200,13 +230,6 @@ private fun AspMap(
                     map.setStyle(Style.Builder().fromUri(BuildConfig.MAP_STYLE_URL)) { style ->
                         style.addSource(AspMapLayer.emptySource())
                         AspMapLayer.layers(darkTheme).forEach(style::addLayer)
-
-                        // The cars go on last, so a pin is never buried under a curb line.
-                        CarMarkerLayer.icon(context, darkTheme)?.let {
-                            style.addImage(CarMarkerLayer.ICON_ID, it)
-                        }
-                        style.addSource(CarMarkerLayer.emptySource())
-                        style.addLayer(CarMarkerLayer.layer(darkTheme))
 
                         if (locationGranted) showWhereYouAre(map, style, context)
 
@@ -227,26 +250,17 @@ private fun AspMap(
                         // digit frames per second for no benefit.
                         map.addOnCameraIdleListener(::reportViewport)
 
-                        // How far from a curb still counts as tapping it. Derived from the zoom so
-                        // it stays roughly a fingertip on screen rather than a fixed distance on
-                        // the ground, which would be untappable when zoomed out and greedy when in.
-                        map.addOnMapClickListener { tapped ->
-                            val metersPerPixel = map.projection
-                                .getMetersPerPixelAtLatitude(tapped.latitude)
-                            currentOnTap(
-                                nyc.curbside.asp.LatLng(tapped.latitude, tapped.longitude),
-                                (metersPerPixel * TAP_RADIUS_PIXELS)
-                                    .coerceIn(MIN_TAP_METERS, CurbMatcher.MAX_MATCH_METERS),
-                            )
-                            true
+                        fun projectCars() {
+                            screenPins = currentCars.map { car ->
+                                val point = map.projection
+                                    .toScreenLocation(LatLng(car.latitude, car.longitude))
+                                ScreenPin(car, point.x, point.y)
+                            }
                         }
 
-                        map.addOnMapLongClickListener { pressed ->
-                            currentOnLongPress(
-                                nyc.curbside.asp.LatLng(pressed.latitude, pressed.longitude),
-                            )
-                            true
-                        }
+                        map.addOnCameraMoveListener(::projectCars)
+                        map.addOnCameraIdleListener(::projectCars)
+                        projectCars()
 
                         // The camera is positioned before the style finishes loading, so it is
                         // already at rest by the time the listener above exists and no idle event
@@ -267,13 +281,52 @@ private fun AspMap(
                     ?.getSourceAs<org.maplibre.android.style.sources.GeoJsonSource>(AspMapLayer.SOURCE_ID)
                     ?.setGeoJson(AspMapLayer.toFeatureCollection(curbs, selectedId))
 
-                style
-                    ?.getSourceAs<org.maplibre.android.style.sources.GeoJsonSource>(CarMarkerLayer.SOURCE_ID)
-                    ?.setGeoJson(CarMarkerLayer.toFeatureCollection(cars))
+                if (style != null) {
+                    screenPins = cars.map { car ->
+                        val point = map.projection.toScreenLocation(LatLng(car.latitude, car.longitude))
+                        ScreenPin(car, point.x, point.y)
+                    }
+                }
             }
         },
     )
+
+        screenPins.forEach { pin -> CarMarker(pin) }
+    }
 }
+
+/** One car, drawn over the map at the position the projection put it. */
+@Composable
+private fun CarMarker(pin: ScreenPin) {
+    val density = LocalDensity.current
+    Column(
+        modifier = Modifier
+            .offset(
+                x = with(density) { pin.x.toDp() } - MARKER_SIZE / 2,
+                y = with(density) { pin.y.toDp() } - MARKER_SIZE / 2,
+            ),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            Modifier
+                .size(MARKER_SIZE)
+                .background(MaterialTheme.colorScheme.onSurface, CircleShape)
+                .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape),
+        )
+        Surface(
+            shape = RoundedCornerShape(6.dp),
+            tonalElevation = 3.dp,
+        ) {
+            Text(
+                pin.car.label,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+            )
+        }
+    }
+}
+
+private val MARKER_SIZE = 18.dp
 
 /**
  * Turns on the blue dot and points the camera at it.

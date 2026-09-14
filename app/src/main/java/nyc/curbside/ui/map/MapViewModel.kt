@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import nyc.curbside.asp.AspRepository
@@ -21,6 +22,16 @@ import nyc.curbside.asp.CurbMatcher
 import nyc.curbside.asp.EvaluatedCurb
 import nyc.curbside.asp.LatLng
 import nyc.curbside.asp.NYC
+
+/** A parked car, as the map draws it. */
+data class CarPin(
+    val id: String,
+    val latitude: Double,
+    val longitude: Double,
+    /** The car's name, or a stand-in when the app could not tell which car it was. */
+    val label: String,
+    val byPartner: Boolean,
+)
 
 data class MapUiState(
     val curbs: List<EvaluatedCurb> = emptyList(),
@@ -70,7 +81,12 @@ class MapViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            _state.value = _state.value.copy(datasetInstalled = asp.isInstalled())
+            // Resolved before touching the state, never inside the copy: `_state.value.copy(x =
+            // suspendingCall())` reads the state first and assigns long afterwards, so anything
+            // that arrived in between is silently overwritten. That is what used to eat the car
+            // pins — this count takes a moment over 79k rows, which is exactly long enough.
+            val installed = asp.isInstalled()
+            _state.update { it.copy(datasetInstalled = installed) }
         }
         // Where the cars are, kept up to date on its own: a spot shared by a partner arrives
         // through the database, so the map gains a pin without the user touching anything.
@@ -86,7 +102,7 @@ class MapViewModel @Inject constructor(
                         byPartner = event.receivedFrom != null,
                     )
                 }
-            }.collect { pins -> _state.value = _state.value.copy(cars = pins) }
+            }.collect { pins -> _state.update { it.copy(cars = pins) } }
         }
         // Statuses go stale on their own: a curb that reads "move within the hour" becomes "move
         // now" with no user action. A minute is fine — the buckets are hours wide.
@@ -111,7 +127,7 @@ class MapViewModel @Inject constructor(
     }
 
     fun setPreviewOffsetHours(hours: Int) {
-        _state.value = _state.value.copy(previewOffsetHours = hours)
+        _state.update { it.copy(previewOffsetHours = hours) }
         reload()
         // The open sheet answers for the scrubbed moment too — that is most of the point of having
         // both on screen at once: drag to Thursday morning and watch the spot stop being legal.
@@ -149,13 +165,13 @@ class MapViewModel @Inject constructor(
 
     /** The user pressed and held somewhere on the map. */
     fun onMapLongPressed(point: LatLng) {
-        _state.value = _state.value.copy(pendingPin = point, selected = null)
+        _state.update { it.copy(pendingPin = point, selected = null) }
         selectedId = null
         selectedAt = null
     }
 
     fun onPendingPinCancelled() {
-        _state.value = _state.value.copy(pendingPin = null)
+        _state.update { it.copy(pendingPin = null) }
     }
 
     /**
@@ -169,7 +185,7 @@ class MapViewModel @Inject constructor(
         val point = _state.value.pendingPin ?: return
         viewModelScope.launch {
             parking.recordManual(point)
-            _state.value = _state.value.copy(pendingPin = null)
+            _state.update { it.copy(pendingPin = null) }
         }
     }
 
@@ -177,16 +193,15 @@ class MapViewModel @Inject constructor(
         selectedId = null
         selectedAt = null
         selectJob?.cancel()
-        _state.value = _state.value.copy(selected = null)
+        _state.update { it.copy(selected = null) }
     }
 
     private fun refreshSelection() {
         val id = selectedId ?: return
         selectJob?.cancel()
         selectJob = viewModelScope.launch {
-            _state.value = _state.value.copy(
-                selected = asp.curbDetail(id, _state.value.previewedAt, selectedAt),
-            )
+            val detail = asp.curbDetail(id, _state.value.previewedAt, selectedAt)
+            _state.update { it.copy(selected = detail) }
         }
     }
 
@@ -194,9 +209,9 @@ class MapViewModel @Inject constructor(
         val box = viewport ?: return
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
-            _state.value = _state.value.copy(loading = true)
+            _state.update { it.copy(loading = true) }
             val curbs = asp.curbsIn(box, _state.value.previewedAt)
-            _state.value = _state.value.copy(curbs = curbs, loading = false)
+            _state.update { it.copy(curbs = curbs, loading = false) }
         }
     }
 
