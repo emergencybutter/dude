@@ -10,8 +10,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import nyc.curbside.asp.AspRepository
+import nyc.curbside.data.ParkingRepository
+import nyc.curbside.data.VehicleRepository
 import nyc.curbside.asp.BoundingBox
 import nyc.curbside.asp.CurbDetail
 import nyc.curbside.asp.CurbMatcher
@@ -33,6 +36,16 @@ data class MapUiState(
     val previewOffsetHours: Int = 0,
     /** The curb the user tapped, with its rules and its next free span. */
     val selected: CurbDetail? = null,
+    /** Every car the app knows the position of, to draw on top of the rules. */
+    val cars: List<CarPin> = emptyList(),
+    /**
+     * A spot the user long-pressed and has not confirmed yet.
+     *
+     * Long-press rather than tap, and confirmed rather than immediate, because a tap already means
+     * "tell me about this curb" and dropping the car somewhere by accident is worse than an extra
+     * press.
+     */
+    val pendingPin: LatLng? = null,
 ) {
     val previewedAt: ZonedDateTime get() = ZonedDateTime.now(NYC).plusHours(previewOffsetHours.toLong())
 
@@ -42,6 +55,8 @@ data class MapUiState(
 @HiltViewModel
 class MapViewModel @Inject constructor(
     private val asp: AspRepository,
+    private val parking: ParkingRepository,
+    vehicles: VehicleRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(MapUiState())
@@ -56,6 +71,22 @@ class MapViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             _state.value = _state.value.copy(datasetInstalled = asp.isInstalled())
+        }
+        // Where the cars are, kept up to date on its own: a spot shared by a partner arrives
+        // through the database, so the map gains a pin without the user touching anything.
+        viewModelScope.launch {
+            combine(parking.observeActive(), vehicles.vehicles) { parked, cars ->
+                parked.map { event ->
+                    CarPin(
+                        id = event.id,
+                        latitude = event.latitude,
+                        longitude = event.longitude,
+                        label = cars.firstOrNull { it.id == event.vehicleId }?.name
+                            ?: if (event.receivedFrom != null) "Their car" else "Your car",
+                        byPartner = event.receivedFrom != null,
+                    )
+                }
+            }.collect { pins -> _state.value = _state.value.copy(cars = pins) }
         }
         // Statuses go stale on their own: a curb that reads "move within the hour" becomes "move
         // now" with no user action. A minute is fine — the buckets are hours wide.
@@ -114,6 +145,32 @@ class MapViewModel @Inject constructor(
         // to know which stretch of it was asked about.
         selectedAt = point
         refreshSelection()
+    }
+
+    /** The user pressed and held somewhere on the map. */
+    fun onMapLongPressed(point: LatLng) {
+        _state.value = _state.value.copy(pendingPin = point, selected = null)
+        selectedId = null
+        selectedAt = null
+    }
+
+    fun onPendingPinCancelled() {
+        _state.value = _state.value.copy(pendingPin = null)
+    }
+
+    /**
+     * Records the car where the user put it.
+     *
+     * The three places that tell people to "drop a pin" — a capture that found no usable position,
+     * a fix too rough to trust, and the empty home screen — had nothing behind them until now:
+     * ParkingRepository.recordManual existed and was never called from anywhere.
+     */
+    fun onPendingPinConfirmed() {
+        val point = _state.value.pendingPin ?: return
+        viewModelScope.launch {
+            parking.recordManual(point)
+            _state.value = _state.value.copy(pendingPin = null)
+        }
     }
 
     fun clearSelection() {

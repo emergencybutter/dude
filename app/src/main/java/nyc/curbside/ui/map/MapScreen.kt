@@ -20,10 +20,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -87,10 +89,12 @@ fun MapScreen(viewModel: MapViewModel = hiltViewModel()) {
     Box(Modifier.fillMaxSize()) {
         AspMap(
             curbs = state.curbs,
+            cars = state.cars,
             selectedId = state.selectedId,
             darkTheme = darkTheme,
             onViewportChanged = viewModel::onViewportChanged,
             onTap = viewModel::onMapTapped,
+            onLongPress = viewModel::onMapLongPressed,
         )
 
         Column(
@@ -109,11 +113,15 @@ fun MapScreen(viewModel: MapViewModel = hiltViewModel()) {
                     PREVIEW_LABEL.format(state.previewedAt)
                 },
             )
+            val pending = state.pendingPin
             val selected = state.selected
-            if (selected == null) {
-                Legend()
-            } else {
-                CurbDetailCard(selected, onDismiss = viewModel::clearSelection)
+            when {
+                pending != null -> PlaceCarCard(
+                    onConfirm = viewModel::onPendingPinConfirmed,
+                    onCancel = viewModel::onPendingPinCancelled,
+                )
+                selected != null -> CurbDetailCard(selected, onDismiss = viewModel::clearSelection)
+                else -> Legend()
             }
         }
 
@@ -138,16 +146,19 @@ fun MapScreen(viewModel: MapViewModel = hiltViewModel()) {
 @Composable
 private fun AspMap(
     curbs: List<nyc.curbside.asp.EvaluatedCurb>,
+    cars: List<CarPin>,
     selectedId: String?,
     darkTheme: Boolean,
     onViewportChanged: (BoundingBox) -> Unit,
     onTap: (point: nyc.curbside.asp.LatLng, toleranceMeters: Double) -> Unit,
+    onLongPress: (nyc.curbside.asp.LatLng) -> Unit,
 ) {
     val context = LocalContext.current
 
     // The click listener is registered once, against the map, and outlives every recomposition;
     // capturing the lambda directly would pin the first one forever.
     val currentOnTap by rememberUpdatedState(onTap)
+    val currentOnLongPress by rememberUpdatedState(onLongPress)
     val mapView = remember {
         MapLibre.getInstance(context)
         MapView(context)
@@ -190,6 +201,13 @@ private fun AspMap(
                         style.addSource(AspMapLayer.emptySource())
                         AspMapLayer.layers(darkTheme).forEach(style::addLayer)
 
+                        // The cars go on last, so a pin is never buried under a curb line.
+                        CarMarkerLayer.icon(context, darkTheme)?.let {
+                            style.addImage(CarMarkerLayer.ICON_ID, it)
+                        }
+                        style.addSource(CarMarkerLayer.emptySource())
+                        style.addLayer(CarMarkerLayer.layer(darkTheme))
+
                         if (locationGranted) showWhereYouAre(map, style, context)
 
                         fun reportViewport() {
@@ -223,6 +241,13 @@ private fun AspMap(
                             true
                         }
 
+                        map.addOnMapLongClickListener { pressed ->
+                            currentOnLongPress(
+                                nyc.curbside.asp.LatLng(pressed.latitude, pressed.longitude),
+                            )
+                            true
+                        }
+
                         // The camera is positioned before the style finishes loading, so it is
                         // already at rest by the time the listener above exists and no idle event
                         // is ever fired for the opening view. Without this the map opens empty and
@@ -241,6 +266,10 @@ private fun AspMap(
                 style
                     ?.getSourceAs<org.maplibre.android.style.sources.GeoJsonSource>(AspMapLayer.SOURCE_ID)
                     ?.setGeoJson(AspMapLayer.toFeatureCollection(curbs, selectedId))
+
+                style
+                    ?.getSourceAs<org.maplibre.android.style.sources.GeoJsonSource>(CarMarkerLayer.SOURCE_ID)
+                    ?.setGeoJson(CarMarkerLayer.toFeatureCollection(cars))
             }
         },
     )
@@ -287,6 +316,33 @@ private fun TimeScrubber(offsetHours: Int, onChange: (Int) -> Unit, label: Strin
                 valueRange = 0f..48f,
                 steps = 47,
             )
+        }
+    }
+}
+
+/**
+ * Confirms a car position the user placed by hand.
+ *
+ * Needed whenever detection could not: no usable fix at the end of a drive, a fix too rough to be
+ * worth trusting, or somebody else's car that the app was never going to notice.
+ */
+@Composable
+private fun PlaceCarCard(onConfirm: () -> Unit, onCancel: () -> Unit) {
+    Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 3.dp) {
+        Column(
+            Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("Put the car here?", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "This replaces wherever Curbside thinks the car is now.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onConfirm) { Text("Park here") }
+                TextButton(onClick = onCancel) { Text("Cancel") }
+            }
         }
     }
 }
