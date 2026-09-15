@@ -2,19 +2,14 @@ package nyc.curbside.asp
 
 import java.time.Instant
 import java.time.LocalDate
-import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import nyc.curbside.BuildConfig
 import nyc.curbside.data.CurbsideSettings
-import okhttp3.OkHttpClient
-import okhttp3.Request
 
 /**
  * Keeps the alternate side suspension calendar fresh.
@@ -23,14 +18,15 @@ import okhttp3.Request
  * observances, snow. Getting this wrong is the app's most embarrassing possible failure: telling
  * someone to go out at 7am on Yom Kippur to move a car that did not need moving.
  *
- * The 311 API publishes roughly a quarter ahead, so a weekly refresh is ample and the cached copy
- * stays useful for months if the network is unavailable. Everything outside the fetched window is
- * reported as unknown rather than assumed — see [SuspensionCalendar.knows].
+ * The dates arrive with the curb dataset rather than from the city directly: the 311 endpoint
+ * needs a subscription key, and one compiled into the app would ship to every phone that installs
+ * it. The calendar only runs about 45 days ahead however long a window is requested, so the bundle
+ * has to be rebuilt to stay current — and everything outside the window it did cover is reported as
+ * unknown rather than assumed, see [SuspensionCalendar.knows].
  */
 @Singleton
 class SuspensionRepository @Inject constructor(
     private val settings: CurbsideSettings,
-    private val http: OkHttpClient,
 ) {
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -49,45 +45,22 @@ class SuspensionRepository @Inject constructor(
     }
 
     /**
-     * Fetches the next quarter and caches it.
+     * Stores the calendar that arrived with the curb dataset.
      *
-     * @return true when the calendar was refreshed. A false is not an error worth surfacing: the
-     *   previous copy remains valid and the worker will try again.
+     * The city's own endpoint needs a subscription key, and a key compiled into an app is a key
+     * published to anyone who unzips it — for an answer that is the same thirty-odd days a year
+     * for the whole city. So the pipeline asks once on a build machine and the dates travel in the
+     * dataset manifest, which the app already fetches on every check.
+     *
+     * @return true when something was stored.
      */
-    suspend fun refresh(today: LocalDate = LocalDate.now(NYC)): Boolean = withContext(Dispatchers.IO) {
-        if (BuildConfig.NYC_311_API_KEY.isEmpty()) return@withContext false
-
-        val from = today.minusDays(1)
-        val to = today.plusDays(QUARTER_DAYS)
-        val url = "$BASE_URL?fromdate=${from.format(API_DATE)}&todate=${to.format(API_DATE)}"
-
-        val body = runCatching {
-            http.newCall(
-                Request.Builder()
-                    .url(url)
-                    .header("Ocp-Apim-Subscription-Key", BuildConfig.NYC_311_API_KEY)
-                    .build(),
-            ).execute().use { response ->
-                if (!response.isSuccessful) null else response.body?.string()
-            }
-        }.getOrNull() ?: return@withContext false
-
-        val days = runCatching { json.decodeFromString<List<CalendarDay>>(body) }.getOrNull()
-            ?: return@withContext false
-
-        val suspended = days.mapNotNull { day ->
-            val date = runCatching { LocalDate.parse(day.date, API_DATE) }.getOrNull() ?: return@mapNotNull null
-            val parking = day.items.firstOrNull { it.type.equals(ALTERNATE_SIDE, ignoreCase = true) }
-                ?: return@mapNotNull null
-            // The API reports "IN EFFECT", "SUSPENDED", or "NOT IN EFFECT". Only the middle one is
-            // a suspension of a rule that would otherwise apply.
-            if (parking.status.contains(SUSPENDED, ignoreCase = true)) date else null
-        }.toSet()
+    suspend fun store(dates: List<String>, from: String, to: String): Boolean = withContext(Dispatchers.IO) {
+        if (from.isBlank() || to.isBlank()) return@withContext false
 
         val stored = StoredCalendar(
-            dates = suspended.map(LocalDate::toString).sorted(),
-            from = from.toString(),
-            to = to.toString(),
+            dates = dates.sorted(),
+            from = from,
+            to = to,
             fetchedAtEpochMillis = Instant.now().toEpochMilli(),
         )
         settings.setSuspensionsJson(json.encodeToString(stored))
@@ -108,26 +81,5 @@ class SuspensionRepository @Inject constructor(
             coverageEnd = runCatching { LocalDate.parse(to) }.getOrNull(),
             fetchedAt = Instant.ofEpochMilli(fetchedAtEpochMillis),
         )
-    }
-
-    @Serializable
-    private data class CalendarDay(
-        @SerialName("today_id") val date: String,
-        @SerialName("items") val items: List<CalendarItem> = emptyList(),
-    )
-
-    @Serializable
-    private data class CalendarItem(
-        @SerialName("type") val type: String = "",
-        @SerialName("status") val status: String = "",
-        @SerialName("details") val details: String = "",
-    )
-
-    private companion object {
-        const val BASE_URL = "https://api.nyc.gov/public/api/GetCalendar"
-        const val ALTERNATE_SIDE = "Alternate Side Parking"
-        const val SUSPENDED = "SUSPENDED"
-        const val QUARTER_DAYS = 89L
-        val API_DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("MM/dd/yyyy")
     }
 }

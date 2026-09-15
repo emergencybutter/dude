@@ -160,7 +160,6 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             local.value = local.value.copy(busy = true)
             registrar.ensureRegistered()
-            suspensions.refresh()
             installer.installIfNeeded()
             refreshDiagnostics()
             local.value = local.value.copy(busy = false)

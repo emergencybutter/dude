@@ -36,7 +36,6 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "MAP_STYLE_URL", "\"${secret("MAP_STYLE_URL")}\"")
-        buildConfigField("String", "NYC_311_API_KEY", "\"${secret("NYC_311_API_KEY")}\"")
         buildConfigField("String", "ASP_DATASET_BASE_URL", "\"${secret("ASP_DATASET_BASE_URL")}\"")
     }
 

@@ -45,7 +45,7 @@ import urllib.parse
 import urllib.request
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Iterator, Sequence
 
 SOCRATA_HOST = "https://data.cityofnewyork.us"
@@ -875,7 +875,68 @@ def build_segments(signs: Iterable[dict], centerlines: Iterable[dict], report_un
     return out, stats
 
 
-def write_bundle(segments: list[dict], out_dir: str, seed: bool = False) -> dict:
+# ---------------------------------------------------------------------------
+# Alternate side suspensions
+# ---------------------------------------------------------------------------
+
+CALENDAR_URL = "https://api.nyc.gov/public/api/GetCalendar"
+
+#: The API answers about this many days whatever window is asked for, so the calendar is always
+#: short-dated and the bundle has to be rebuilt to keep it current.
+CALENDAR_DAYS = 90
+
+
+def fetch_suspensions(key: str) -> dict | None:
+    """The days the city has lifted alternate side, from the 311 calendar.
+
+    Fetched here rather than on each phone. The endpoint needs a subscription key, and a key
+    compiled into an app is a key published to everyone who unzips it — while the answer is the
+    same thirty-odd days a year for the whole city. One request on a build machine replaces one per
+    device per week, and the app ends up needing no key at all.
+
+    Returns None when the fetch fails, which leaves whatever the previous bundle said rather than
+    publishing an empty calendar: an empty one reads as "nothing is suspended", and the app would
+    send someone out on Thanksgiving morning.
+    """
+    today = datetime.now(timezone.utc).date()
+    start = today - timedelta(days=1)
+    end = today + timedelta(days=CALENDAR_DAYS)
+    url = (
+        f"{CALENDAR_URL}?fromdate={start.strftime('%m/%d/%Y')}"
+        f"&todate={end.strftime('%m/%d/%Y')}"
+    )
+
+    request = urllib.request.Request(url, headers={"Ocp-Apim-Subscription-Key": key})
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as error:  # noqa: BLE001 - any failure means "keep the old calendar"
+        print(f"  suspension calendar unavailable: {error}", file=sys.stderr)
+        return None
+
+    dates: list[str] = []
+    covered: list[str] = []
+    for day in payload.get("days", []):
+        raw = day.get("today_id")
+        if not raw or len(raw) != 8:
+            continue
+        iso = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
+        covered.append(iso)
+        for item in day.get("items", []):
+            if item.get("type", "").strip().lower() != "alternate side parking":
+                continue
+            # "IN EFFECT", "SUSPENDED" or "NOT IN EFFECT". Only the middle one lifts a rule that
+            # would otherwise have applied; "not in effect" is a Sunday, with nothing to lift.
+            if "SUSPENDED" in item.get("status", "").upper():
+                dates.append(iso)
+
+    if not covered:
+        return None
+
+    return {"from": min(covered), "to": max(covered), "dates": sorted(set(dates))}
+
+
+def write_bundle(segments: list[dict], out_dir: str, seed: bool = False, suspensions: dict | None = None) -> dict:
     """Write the bundle and its manifest.
 
     ``seed`` writes the bundle under a fixed, extension-free name for packaging into the APK's
@@ -901,6 +962,9 @@ def write_bundle(segments: list[dict], out_dir: str, seed: bool = False) -> dict
     manifest = {
         "version": version,
         "path": filename,
+        # Carried in the manifest rather than beside it: the manifest is fetched on every check
+        # even when the segment bundle is unchanged, so the calendar refreshes without a download.
+        "suspensions": suspensions,
         "segment_count": len(segments),
         "built_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -917,6 +981,11 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--signs", help="path to a cached signs JSON file instead of the API")
     parser.add_argument("--centerlines", help="path to a cached centreline JSON file instead of the API")
     parser.add_argument("--report-unparsed", action="store_true", help="print sign copy the parser could not read")
+    parser.add_argument(
+        "--calendar-key",
+        help="NYC API portal subscription key, for the alternate side suspension calendar "
+        "(default: $NYC_311_API_KEY). Without it the bundle carries no suspensions.",
+    )
     parser.add_argument(
         "--seed",
         action="store_true",
@@ -942,7 +1011,22 @@ def main(argv: Sequence[str]) -> int:
     print(f"  {len(centerlines)} centreline rows", file=sys.stderr)
 
     segments, stats = build_segments(signs, centerlines, args.report_unparsed)
-    manifest = write_bundle(segments, args.out, seed=args.seed)
+    key = args.calendar_key or os.environ.get("NYC_311_API_KEY", "")
+    suspensions = fetch_suspensions(key) if key else None
+    if suspensions:
+        print(
+            f"Alternate side suspended on {len(suspensions['dates'])} days "
+            f"between {suspensions['from']} and {suspensions['to']}.",
+            file=sys.stderr,
+        )
+    elif not key:
+        print(
+            "No 311 key given, so the bundle carries no suspension calendar and the app will "
+            "treat holidays as ordinary cleaning days. Pass --calendar-key or set NYC_311_API_KEY.",
+            file=sys.stderr,
+        )
+
+    manifest = write_bundle(segments, args.out, seed=args.seed, suspensions=suspensions)
 
     parsed_pct = 100.0 * stats["signs_parsed"] / stats["signs"] if stats["signs"] else 0.0
     print(

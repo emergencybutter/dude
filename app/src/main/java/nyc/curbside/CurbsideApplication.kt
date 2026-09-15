@@ -38,6 +38,10 @@ class CurbsideApplication : Application(), Configuration.Provider {
         // Load the bundled curb dataset the first time the app runs, so the map is useful before
         // any network is available. A count query when one is already installed, which is every
         // launch but the first.
-        scope.launch { datasetInstaller.installSeedIfEmpty() }
+        scope.launch {
+            datasetInstaller.installSeedIfEmpty()
+            // Separately from the curb data: the calendar expires in weeks, the streets do not.
+            datasetInstaller.installSeedSuspensions()
+        }
     }
 }

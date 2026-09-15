@@ -73,7 +73,7 @@ failing the build, so a fresh clone compiles and runs.
 | Key | What it does if missing |
 | --- | --- |
 | `MAP_STYLE_URL` | A MapLibre style URL for the basemap. Blank means a blank basemap; the curb overlay still draws. `https://tiles.openfreemap.org/styles/liberty` needs no key and has the street detail this is useless without |
-| `NYC_311_API_KEY` | Free from the [NYC API portal](https://api-portal.nyc.gov/). Blank means no suspension calendar, so holidays are treated as ordinary days |
+| `NYC_311_API_KEY` | Not read by the app. The **pipeline** takes it (or `--calendar-key`) and bakes the suspension calendar into the bundle, so no key ever reaches a phone. Without it the bundle carries no suspensions and holidays are treated as ordinary days |
 | `ASP_DATASET_BASE_URL` | Where `manifest.json` and the segment bundle are hosted. Blank means no curb data, so the map is empty and parking spots get no schedule |
 
 Sharing additionally needs a Firebase project and `app/google-services.json`. Deploy
@@ -82,7 +82,7 @@ Sharing additionally needs a Firebase project and `app/google-services.json`. De
 ### Building the curb dataset
 
 ```bash
-python3 tools/asp_pipeline.py --out dist --borough Brooklyn --report-unparsed
+NYC_311_API_KEY=... python3 tools/asp_pipeline.py --out dist --borough Brooklyn --report-unparsed
 ```
 
 Publish `dist/` at whatever `ASP_DATASET_BASE_URL` points at. `--report-unparsed` lists the sign copy

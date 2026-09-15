@@ -8,10 +8,27 @@ Where the rules come from and how they get onto the phone.
 | --- | --- | --- | --- |
 | Parking regulation signs | [`nfid-uabd`](https://data.cityofnewyork.us/Transportation/Parking-Regulation-Locations-and-Signs/nfid-uabd) on NYC Open Data | ~1M rows | Monthly |
 | Street centrelines (CSCL) | [`inkn-q76z`](https://data.cityofnewyork.us/City-Government/Centerline/inkn-q76z) | ~120k segments | Monthly |
-| Alternate side suspensions | [NYC 311 public API](https://api-portal.nyc.gov/), `GET https://api.nyc.gov/public/api/GetCalendar?fromdate=&todate=` with an `Ocp-Apim-Subscription-Key` header | ~90 days | Weekly |
+| Alternate side suspensions | [NYC 311 public API](https://api-portal.nyc.gov/), `GET https://api.nyc.gov/public/api/GetCalendar?fromdate=&todate=` with an `Ocp-Apim-Subscription-Key` header | ~45 days | Per bundle |
 
-The first two are preprocessed offline. Only the third is fetched by the app, and it is a few
-kilobytes.
+All three are fetched offline. The app holds no API key of any kind.
+
+## Why the suspension calendar is not fetched by the app
+
+It was, once. The endpoint needs a subscription key, and a key compiled into an app is a key
+published to everyone who unzips the APK — it turned up verbatim in two dex files. The answer is
+also identical for every user: about thirty days a year, citywide. One request on a build machine
+replaces one per device per week, and nobody cloning this repo needs a key to run the app.
+
+The dates ride in `manifest.json` rather than a file of their own, because the manifest is fetched
+on every update check even when the segment bundle is unchanged — and the calendar expires long
+before the streets do. `AspDatasetInstaller` stores them before the version check for that reason,
+and reads them out of the packaged seed on every launch regardless of whether the curb table is
+already populated.
+
+The cost of the trade: the calendar is only as current as the last bundle. The API answers about 45
+days whatever window you request, so the pipeline needs running monthly to keep it useful. Past the
+window it covered, `SuspensionCalendar.knows` reports unknown rather than "not suspended" — an
+expired calendar must never read as "nothing is suspended".
 
 ## Why preprocess
 

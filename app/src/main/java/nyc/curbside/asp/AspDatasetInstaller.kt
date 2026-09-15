@@ -57,6 +57,7 @@ class AspDatasetInstaller @Inject constructor(
     @ApplicationContext private val context: Context,
     private val dao: CurbSegmentDao,
     private val settings: CurbsideSettings,
+    private val suspensions: SuspensionRepository,
     private val http: OkHttpClient,
 ) {
 
@@ -69,6 +70,12 @@ class AspDatasetInstaller @Inject constructor(
         if (BuildConfig.ASP_DATASET_BASE_URL.isEmpty()) return@withContext false
 
         val manifest = fetchManifest() ?: return@withContext false
+
+        // Before the version check, deliberately. The suspension calendar only runs about 45 days
+        // ahead, so it goes stale long before the curb data changes — and the manifest is fetched
+        // on every check even when the segment bundle is untouched.
+        manifest.suspensions?.let { suspensions.store(it.dates, it.from, it.to) }
+
         val installed = settings.readAspDatasetVersion()
         if (!force && installed == manifest.version && dao.count() > 0) return@withContext false
 
@@ -99,9 +106,38 @@ class AspDatasetInstaller @Inject constructor(
         val segments = readSeed("$SEED_DIR/${manifest.path}", ::parseSegments) ?: return@withContext false
         if (segments.isEmpty()) return@withContext false
 
+        manifest.suspensions?.let { suspensions.store(it.dates, it.from, it.to) }
+
         segments.chunked(INSERT_CHUNK).forEach { dao.insertAll(it) }
         settings.setAspDatasetVersion(manifest.version)
         true
+    }
+
+    /**
+     * Takes the suspension calendar out of the seed, whatever state the curb table is in.
+     *
+     * [installSeedIfEmpty] is gated on an empty table because curb data is large and rarely
+     * changes. The calendar is neither: it is a few dozen dates that expire in about 45 days, so
+     * tying its refresh to "has this phone ever loaded curb data" would leave a long-installed app
+     * with a calendar from whenever it was first opened — and a calendar that has quietly run out
+     * says nothing is suspended, which is the failure this whole thing exists to avoid.
+     *
+     * Only ever moves forward: a seed older than what is already stored is ignored, so reinstalling
+     * an old build cannot walk the calendar backwards.
+     *
+     * @return true when the stored calendar was replaced.
+     */
+    suspend fun installSeedSuspensions(): Boolean = withContext(Dispatchers.IO) {
+        val manifest = readSeed(SEED_MANIFEST) {
+            json.decodeFromString<Manifest>(it.readBytes().decodeToString())
+        } ?: return@withContext false
+        val seeded = manifest.suspensions ?: return@withContext false
+        if (seeded.to.isBlank()) return@withContext false
+
+        val known = suspensions.current().coverageEnd?.toString()
+        if (known != null && known >= seeded.to) return@withContext false
+
+        suspensions.store(seeded.dates, seeded.from, seeded.to)
     }
 
     /** Absent assets are the normal case in a clone that never ran the pipeline, not an error. */
@@ -145,6 +181,19 @@ class AspDatasetInstaller @Inject constructor(
         val path: String,
         @SerialName("segment_count") val segmentCount: Int = 0,
         @SerialName("built_at") val builtAt: String = "",
+        /**
+         * The alternate side suspension calendar, fetched by the pipeline rather than by every
+         * phone: the city's endpoint needs a subscription key, and one compiled into the app is a
+         * key handed to anyone who unzips it. Null in a bundle built without a key.
+         */
+        val suspensions: Suspensions? = null,
+    )
+
+    @Serializable
+    private data class Suspensions(
+        val dates: List<String> = emptyList(),
+        val from: String = "",
+        val to: String = "",
     )
 
     @Serializable
@@ -220,7 +269,7 @@ class DataMaintenanceWorker @AssistedInject constructor(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        suspensions.refresh()
+        // The suspension calendar rides in the dataset manifest, so installing covers both.
         installer.installIfNeeded()
         share.enqueuePending(parkingDao)
         coordinator.reconcile()
