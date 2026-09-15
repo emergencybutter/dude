@@ -44,6 +44,9 @@ data class CurbEvaluation(
     val governing: Regulation? get() = current?.regulation ?: next?.regulation
 }
 
+/** A day this curb's cleaning is called off, and what for. */
+data class SuspendedDay(val date: LocalDate, val reason: String?)
+
 /**
  * One run of a curb that has a single answer along its whole length.
  *
@@ -235,6 +238,43 @@ object SweepSchedule {
 
     /** Shorter than this and a run is survey noise, not a stretch of kerb worth drawing. */
     private const val MIN_STRETCH_METERS = 1.0
+
+    /**
+     * The days ahead when this curb's cleaning is called off.
+     *
+     * Only the days that would otherwise have been cleaning days here: a curb swept on Mondays and
+     * Thursdays does not care that alternate side is suspended on a Tuesday, and listing every
+     * holiday in the city would bury the one that matters. Rules that suspensions do not touch — a
+     * hydrant, a bus stop — are ignored for the same reason.
+     *
+     * Bounded by what the calendar actually covers, so this never implies a promise about dates the
+     * city has not published yet.
+     */
+    fun suspensionsAhead(
+        regulations: List<Regulation>,
+        now: ZonedDateTime,
+        calendar: SuspensionCalendar,
+        days: Int = SUSPENSION_LOOKAHEAD_DAYS,
+    ): List<SuspendedDay> {
+        val suspendable = regulations.filter { it.isSuspendable }
+        if (suspendable.isEmpty()) return emptyList()
+
+        val today = now.withZoneSameInstant(NYC).toLocalDate()
+        return (0L..days.toLong())
+            .map { today.plusDays(it) }
+            .filter { date -> calendar.isSuspended(date) }
+            .filter { date -> suspendable.any { it.appliesOn(date.dayOfWeek) } }
+            .map { date -> SuspendedDay(date, calendar.reasonFor(date)) }
+    }
+
+    /**
+     * How far ahead suspensions are listed.
+     *
+     * Longer than [HORIZON_DAYS], which exists to find the next restriction and only needs a week
+     * to guarantee one. This answers "what is coming up", and the city publishes about six weeks
+     * ahead, so there is no reason to show less than it knows.
+     */
+    const val SUSPENSION_LOOKAHEAD_DAYS: Int = 45
 
     /** Shared with [ParkingWindow], which must call a curb hopeless on exactly the same grounds. */
     internal fun isAroundTheClock(regulation: Regulation): Boolean =

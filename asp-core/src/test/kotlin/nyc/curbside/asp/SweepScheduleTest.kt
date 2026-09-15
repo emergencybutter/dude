@@ -1,5 +1,6 @@
 package nyc.curbside.asp
 
+import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneOffset
@@ -19,6 +20,65 @@ class SweepScheduleTest {
 
     private fun nyc(date: String, time: String) =
         ZonedDateTime.of(LocalDate.parse(date), LocalTime.parse(time), NYC)
+
+    @Test
+    fun `only suspensions that fall on this curb's cleaning days are listed`() {
+        // Mon/Thu sweeping. The city suspends a Tuesday and a Thursday; only the Thursday is this
+        // curb's business, and listing every holiday in the city would bury it.
+        val calendar = SuspensionCalendar(
+            suspendedDates = setOf(LocalDate.parse("2026-09-15"), LocalDate.parse("2026-09-17")),
+            coverageStart = LocalDate.parse("2026-09-01"),
+            coverageEnd = LocalDate.parse("2026-10-28"),
+            fetchedAt = null,
+            reasons = mapOf(LocalDate.parse("2026-09-17") to "Yom Kippur"),
+        )
+
+        val ahead = SweepSchedule.suspensionsAhead(
+            listOf(monThuSweeping),
+            nyc("2026-09-14", "12:00"),
+            calendar,
+        )
+
+        assertEquals(listOf(LocalDate.parse("2026-09-17")), ahead.map { it.date })
+        assertEquals("Yom Kippur", ahead.single().reason)
+    }
+
+    @Test
+    fun `a curb with nothing suspendable lists nothing`() {
+        // No standing at any hour is not lifted for a holiday, so a suspension is not its business.
+        val noStanding = Regulation(
+            kind = RegulationKind.NO_STANDING,
+            days = DayOfWeek.entries.toSet(),
+            window = null,
+            raw = "NO STANDING ANYTIME",
+        )
+        val calendar = SuspensionCalendar(
+            suspendedDates = setOf(LocalDate.parse("2026-09-17")),
+            coverageStart = LocalDate.parse("2026-09-01"),
+            coverageEnd = LocalDate.parse("2026-10-28"),
+            fetchedAt = null,
+        )
+
+        assertTrue(
+            SweepSchedule.suspensionsAhead(listOf(noStanding), nyc("2026-09-14", "12:00"), calendar)
+                .isEmpty(),
+        )
+    }
+
+    @Test
+    fun `suspensions beyond what the calendar covers are not invented`() {
+        val calendar = SuspensionCalendar(
+            suspendedDates = setOf(LocalDate.parse("2026-12-25")),
+            coverageStart = LocalDate.parse("2026-09-01"),
+            coverageEnd = LocalDate.parse("2026-10-28"),
+            fetchedAt = null,
+        )
+
+        assertTrue(
+            SweepSchedule.suspensionsAhead(listOf(monThuSweeping), nyc("2026-09-14", "12:00"), calendar)
+                .isEmpty(),
+        )
+    }
 
     private fun suspend(vararg dates: String) = SuspensionCalendar(
         suspendedDates = dates.map(LocalDate::parse).toSet(),

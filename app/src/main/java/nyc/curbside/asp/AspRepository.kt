@@ -38,6 +38,13 @@ data class CurbDetail(
      * whole curb is being described.
      */
     val alongMeters: Double? = null,
+    /**
+     * The days ahead when this curb's cleaning is called off, and what for.
+     *
+     * Only the ones that land on a day it would have been cleaned: every other holiday in the city
+     * is noise here.
+     */
+    val suspensions: List<SuspendedDay> = emptyList(),
 )
 
 /**
@@ -157,6 +164,11 @@ class AspRepository @Inject constructor(
             ),
             at = now,
             alongMeters = along,
+            suspensions = SweepSchedule.suspensionsAhead(
+                regulations.filter { it.governs(along) },
+                now,
+                calendar,
+            ),
         )
     }
 

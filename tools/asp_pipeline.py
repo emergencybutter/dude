@@ -914,7 +914,7 @@ def fetch_suspensions(key: str) -> dict | None:
         print(f"  suspension calendar unavailable: {error}", file=sys.stderr)
         return None
 
-    dates: list[str] = []
+    dates: dict[str, str] = {}
     covered: list[str] = []
     for day in payload.get("days", []):
         raw = day.get("today_id")
@@ -928,12 +928,29 @@ def fetch_suspensions(key: str) -> dict | None:
             # "IN EFFECT", "SUSPENDED" or "NOT IN EFFECT". Only the middle one lifts a rule that
             # would otherwise have applied; "not in effect" is a Sunday, with nothing to lift.
             if "SUSPENDED" in item.get("status", "").upper():
-                dates.append(iso)
+                dates[iso] = reason_for(item.get("details", ""))
 
     if not covered:
         return None
 
-    return {"from": min(covered), "to": max(covered), "dates": sorted(set(dates))}
+    return {
+        "from": min(covered),
+        "to": max(covered),
+        "dates": sorted(dates),
+        # Why, not just when. "Suspended" on its own invites the question, and the city already
+        # answers it in the same payload.
+        "reasons": {date: dates[date] for date in sorted(dates) if dates[date]},
+    }
+
+
+#: "Alternate side parking is suspended for Yom Kippur. Meters are in effect." -> "Yom Kippur"
+SUSPENSION_REASON = re.compile(r"suspended for ([^.]+)", re.IGNORECASE)
+
+
+def reason_for(details: str) -> str:
+    """The holiday out of the city's sentence, or nothing rather than a paragraph."""
+    match = SUSPENSION_REASON.search(details or "")
+    return match.group(1).strip() if match else ""
 
 
 def write_bundle(segments: list[dict], out_dir: str, seed: bool = False, suspensions: dict | None = None) -> dict:

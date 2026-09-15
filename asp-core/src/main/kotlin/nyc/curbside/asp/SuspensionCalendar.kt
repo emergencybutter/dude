@@ -15,7 +15,11 @@ data class SuspensionCalendar(
     val coverageStart: LocalDate?,
     val coverageEnd: LocalDate?,
     val fetchedAt: Instant?,
+    /** Why each date is suspended — "Yom Kippur" — where the city said. */
+    val reasons: Map<LocalDate, String> = emptyMap(),
 ) {
+    fun reasonFor(date: LocalDate): String? = reasons[date]?.takeIf { it.isNotBlank() }
+
     fun knows(date: LocalDate): Boolean {
         val start = coverageStart ?: return false
         val end = coverageEnd ?: return false

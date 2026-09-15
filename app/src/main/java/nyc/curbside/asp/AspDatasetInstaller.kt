@@ -74,7 +74,7 @@ class AspDatasetInstaller @Inject constructor(
         // Before the version check, deliberately. The suspension calendar only runs about 45 days
         // ahead, so it goes stale long before the curb data changes — and the manifest is fetched
         // on every check even when the segment bundle is untouched.
-        manifest.suspensions?.let { suspensions.store(it.dates, it.from, it.to) }
+        manifest.suspensions?.let { suspensions.store(it.dates, it.from, it.to, it.reasons) }
 
         val installed = settings.readAspDatasetVersion()
         if (!force && installed == manifest.version && dao.count() > 0) return@withContext false
@@ -106,7 +106,7 @@ class AspDatasetInstaller @Inject constructor(
         val segments = readSeed("$SEED_DIR/${manifest.path}", ::parseSegments) ?: return@withContext false
         if (segments.isEmpty()) return@withContext false
 
-        manifest.suspensions?.let { suspensions.store(it.dates, it.from, it.to) }
+        manifest.suspensions?.let { suspensions.store(it.dates, it.from, it.to, it.reasons) }
 
         segments.chunked(INSERT_CHUNK).forEach { dao.insertAll(it) }
         settings.setAspDatasetVersion(manifest.version)
@@ -134,10 +134,16 @@ class AspDatasetInstaller @Inject constructor(
         val seeded = manifest.suspensions ?: return@withContext false
         if (seeded.to.isBlank()) return@withContext false
 
-        val known = suspensions.current().coverageEnd?.toString()
-        if (known != null && known >= seeded.to) return@withContext false
+        // Replace when the seed reaches further than what is stored, or when it says more about
+        // the same days. Coverage alone was not enough: a rebuild that added the holiday names
+        // without extending the window was skipped, leaving dates on the phone with nothing to
+        // explain them.
+        val stored = suspensions.current()
+        val reachesFurther = stored.coverageEnd?.toString()?.let { it < seeded.to } ?: true
+        val saysMore = seeded.reasons.isNotEmpty() && stored.reasons.isEmpty()
+        if (!reachesFurther && !saysMore) return@withContext false
 
-        suspensions.store(seeded.dates, seeded.from, seeded.to)
+        suspensions.store(seeded.dates, seeded.from, seeded.to, seeded.reasons)
     }
 
     /** Absent assets are the normal case in a clone that never ran the pipeline, not an error. */
@@ -194,6 +200,8 @@ class AspDatasetInstaller @Inject constructor(
         val dates: List<String> = emptyList(),
         val from: String = "",
         val to: String = "",
+        /** Date to holiday, where the city gave a reason. */
+        val reasons: Map<String, String> = emptyMap(),
     )
 
     @Serializable

@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import java.time.DayOfWeek
 import java.time.Duration
 import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
 import nyc.curbside.asp.CurbDetail
@@ -37,6 +38,7 @@ import nyc.curbside.asp.ParkingAllowance
 import nyc.curbside.asp.Regulation
 import nyc.curbside.asp.RegulationKind
 import nyc.curbside.asp.StreetSide
+import nyc.curbside.asp.SuspendedDay
 import nyc.curbside.asp.TimeWindow
 import nyc.curbside.ui.humaniseDuration
 
@@ -107,6 +109,11 @@ fun CurbDetailCard(detail: CurbDetail, onDismiss: () -> Unit) {
                 )
             }
 
+            if (detail.suspensions.isNotEmpty()) {
+                HorizontalDivider()
+                SuspensionList(detail.suspensions, detail.at)
+            }
+
             HorizontalDivider()
 
             // With the tapped point in hand the rules divide: the ones governing that stretch of
@@ -144,6 +151,35 @@ fun CurbDetailCard(detail: CurbDetail, onDismiss: () -> Unit) {
         }
     }
 }
+
+/**
+ * The days this curb's cleaning is called off.
+ *
+ * Shown against the rules rather than only as a status, because "no parking 8-9:30am Thursday" and
+ * "except this Thursday, for Yom Kippur" are the same question, and the second is the one that
+ * makes somebody move a car they did not need to move.
+ */
+@Composable
+private fun SuspensionList(days: List<SuspendedDay>, now: ZonedDateTime) {
+    Text(
+        if (days.size == 1) "Cleaning is suspended once" else "Cleaning is suspended ${days.size} times",
+        style = MaterialTheme.typography.labelMedium,
+    )
+    days.forEach { day ->
+        Text(
+            buildString {
+                append("·  ")
+                append(SUSPENSION_DATE.format(day.date))
+                day.reason?.let { append(" — ").append(it) }
+                if (day.date == now.toLocalDate()) append("  (today)")
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+private val SUSPENSION_DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM", Locale.US)
 
 /**
  * The answer, in as few words as it can honestly be put.

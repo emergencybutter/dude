@@ -54,7 +54,12 @@ class SuspensionRepository @Inject constructor(
      *
      * @return true when something was stored.
      */
-    suspend fun store(dates: List<String>, from: String, to: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun store(
+        dates: List<String>,
+        from: String,
+        to: String,
+        reasons: Map<String, String> = emptyMap(),
+    ): Boolean = withContext(Dispatchers.IO) {
         if (from.isBlank() || to.isBlank()) return@withContext false
 
         val stored = StoredCalendar(
@@ -62,6 +67,7 @@ class SuspensionRepository @Inject constructor(
             from = from,
             to = to,
             fetchedAtEpochMillis = Instant.now().toEpochMilli(),
+            reasons = reasons,
         )
         settings.setSuspensionsJson(json.encodeToString(stored))
         cached = stored.toCalendar()
@@ -74,12 +80,16 @@ class SuspensionRepository @Inject constructor(
         val from: String,
         val to: String,
         val fetchedAtEpochMillis: Long,
+        val reasons: Map<String, String> = emptyMap(),
     ) {
         fun toCalendar() = SuspensionCalendar(
             suspendedDates = dates.mapNotNull { runCatching { LocalDate.parse(it) }.getOrNull() }.toSet(),
             coverageStart = runCatching { LocalDate.parse(from) }.getOrNull(),
             coverageEnd = runCatching { LocalDate.parse(to) }.getOrNull(),
             fetchedAt = Instant.ofEpochMilli(fetchedAtEpochMillis),
+            reasons = reasons.mapNotNull { (date, why) ->
+                runCatching { LocalDate.parse(date) }.getOrNull()?.let { it to why }
+            }.toMap(),
         )
     }
 }
