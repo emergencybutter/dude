@@ -262,6 +262,27 @@ private fun AspMap(
                         map.addOnCameraIdleListener(::projectCars)
                         projectCars()
 
+                        // How far from a curb still counts as tapping it. Derived from the zoom so
+                        // it stays roughly a fingertip on screen rather than a fixed distance on
+                        // the ground, which would be untappable when zoomed out and greedy when in.
+                        map.addOnMapClickListener { tapped ->
+                            val metersPerPixel = map.projection
+                                .getMetersPerPixelAtLatitude(tapped.latitude)
+                            currentOnTap(
+                                nyc.curbside.asp.LatLng(tapped.latitude, tapped.longitude),
+                                (metersPerPixel * TAP_RADIUS_PIXELS)
+                                    .coerceIn(MIN_TAP_METERS, CurbMatcher.MAX_MATCH_METERS),
+                            )
+                            true
+                        }
+
+                        map.addOnMapLongClickListener { pressed ->
+                            currentOnLongPress(
+                                nyc.curbside.asp.LatLng(pressed.latitude, pressed.longitude),
+                            )
+                            true
+                        }
+
                         // The camera is positioned before the style finishes loading, so it is
                         // already at rest by the time the listener above exists and no idle event
                         // is ever fired for the opening view. Without this the map opens empty and
