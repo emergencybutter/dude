@@ -17,6 +17,7 @@ hilt = "2.53.1"
 hiltAndroidx = "1.2.0"
 carApp = "1.4.0"
 playServicesLocation = "21.3.0"
+googleServices = "4.4.2"
 firebaseBom = "33.7.0"
 maplibre = "13.6.1"
 okhttp = "4.12.0"
@@ -97,3 +98,4 @@ kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "ko
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
+google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }

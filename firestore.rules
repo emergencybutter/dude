@@ -2,10 +2,11 @@ rules_version = '2';
 
 // Access rules for household sharing.
 //
-// The threat model is narrow but real: the documents here are encrypted, so a breach of Firestore
-// leaks timestamps and user ids rather than locations. These rules exist to stop the other failure
-// modes — someone enumerating households, adding themselves to one, or reading a couple's parking
-// history because they guessed a document id.
+// The threat model is narrow but real:
+// 1. Zero-Knowledge: The documents are end-to-end encrypted with an air-gapped QR key, so a
+//    breach of Firestore leaks timestamps and user ids rather than locations.
+// 2. Abuse Prevention: Rules enforce payload size caps, membership bounds, short-lived invite TTLs,
+//    and strict attribution to prevent storage exhaustion, spam, or forged records.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -23,34 +24,45 @@ service cloud.firestore {
       // Only members can see who else is in the household.
       allow read: if isMember(householdId);
 
-      // Anyone signed in may create a household, but only with themselves as the sole member.
+      // Anyone signed in may create a household, but only with themselves as the sole member (max 5 members).
       allow create: if signedIn() &&
-        request.resource.data.members.keys().hasOnly([request.auth.uid]);
+        request.resource.data.members.keys().hasOnly([request.auth.uid]) &&
+        request.resource.data.members.size() == 1 &&
+        request.resource.data.members[request.auth.uid] is string &&
+        request.resource.data.members[request.auth.uid].size() <= 64;
 
-      // A member may edit the household. A non-member may add themselves and nobody else, which is
-      // what the invite flow does after it has verified an unexpired invite.
-      allow update: if isMember(householdId) ||
+      // A member may edit the household (or remove themselves). A non-member may add themselves
+      // and nobody else, provided the household does not exceed 5 members.
+      allow update: if (isMember(householdId) ||
         (signedIn() &&
          request.resource.data.members.keys().hasAll(resource.data.members.keys()) &&
          request.resource.data.members.keys().removeAll(resource.data.members.keys())
-           .hasOnly([request.auth.uid]));
+           .hasOnly([request.auth.uid]))) &&
+        request.resource.data.members.size() <= 5 &&
+        request.resource.data.members.size() >= 1;
 
       allow delete: if false;
 
       match /parkings/{eventId} {
         allow read: if isMember(householdId);
 
-        // A member may only write records attributed to themselves, so one partner cannot forge a
-        // parking spot in the other's name.
+        // A member may only write records attributed to themselves with bounded payload sizes.
         allow create, update: if isMember(householdId) &&
           request.resource.data.from == request.auth.uid &&
-          request.resource.data.envelope.keys().hasAll(['nonce', 'ciphertext', 'version']);
+          request.resource.data.at is int &&
+          request.resource.data.envelope.keys().hasAll(['nonce', 'ciphertext', 'version']) &&
+          request.resource.data.envelope.nonce is string &&
+          request.resource.data.envelope.nonce.size() <= 64 &&
+          request.resource.data.envelope.ciphertext is string &&
+          request.resource.data.envelope.ciphertext.size() <= 4096 &&
+          request.resource.data.envelope.version is int;
 
         allow delete: if isMember(householdId) && resource.data.from == request.auth.uid;
       }
 
       match /tokens/{token} {
-        allow read, write: if isMember(householdId);
+        allow read, write: if isMember(householdId) &&
+          token.size() <= 256;
       }
     }
 
@@ -60,7 +72,11 @@ service cloud.firestore {
     match /invites/{code} {
       allow get: if signedIn();
       allow list: if false;
-      allow create: if signedIn() && request.resource.data.createdBy == request.auth.uid;
+      allow create: if signedIn() &&
+        request.resource.data.createdBy == request.auth.uid &&
+        request.resource.data.householdId is string &&
+        request.resource.data.expiresAt is int &&
+        request.resource.data.expiresAt <= request.time.toMillis() + 1800000;
       allow delete: if signedIn();
       allow update: if false;
     }

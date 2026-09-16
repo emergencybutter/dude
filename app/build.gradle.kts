@@ -9,6 +9,10 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 // Secrets stay out of the repository. `local.properties` is gitignored; CI injects the same keys as
 // environment variables. Missing keys degrade features rather than failing the build, so a fresh
 // clone still compiles and runs (with a blank basemap and no suspension calendar).
