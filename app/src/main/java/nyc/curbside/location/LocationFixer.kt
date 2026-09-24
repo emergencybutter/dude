@@ -78,12 +78,47 @@ class LocationFixer @Inject constructor(
         ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
 
-    suspend fun capture(now: Instant = Instant.now()): Fix? {
-        if (!hasLocationPermission()) return breadcrumbFix(now)
+    /**
+     * @param endedAt when the car actually stopped. Everything that asks "is this position stale"
+     *   measures against this rather than [now], because the gap between the two is debounce the
+     *   user spent walking: a fix from before the car stopped describes the car, and one from
+     *   after it increasingly describes the pavement.
+     * @param snapshot the position read at the moment the end signal arrived, before the user
+     *   could get anywhere. When one exists and belongs to this stop it is the best answer
+     *   available and nothing else is consulted.
+     */
+    suspend fun capture(
+        now: Instant = Instant.now(),
+        endedAt: Instant = now,
+        snapshot: Fix? = null,
+    ): Fix? {
+        // Trusted only if it belongs to *this* stop. A capture that never ran leaves its snapshot
+        // behind, and a later drive that parks with no debounce of its own would otherwise spend
+        // it — pinning the car precisely, at the place it was two drives ago.
+        snapshot?.takeIf { it.describes(endedAt) }?.let { return it }
+        if (!hasLocationPermission()) return breadcrumbFix(endedAt)
 
-        cachedFix(now)?.let { return it }
+        cachedFix(endedAt)?.let { return it }
         currentFix(now)?.let { return it }
-        return breadcrumbFix(now)
+        return breadcrumbFix(endedAt)
+    }
+
+    /** Whether a held position is close enough in time to [endedAt] to be that stop's own. */
+    private fun Fix.describes(endedAt: Instant): Boolean {
+        val before = Duration.between(at, endedAt)
+        return before <= CACHE_MAX_AGE && (!before.isNegative || before.negated() <= CACHE_MAX_LEAD)
+    }
+
+    /**
+     * The position to hold onto while a park confirmation is pending.
+     *
+     * Free — it reads the fix the system already had. Taken the instant a drive-ended signal
+     * lands so that whatever the debounce decides later, the coordinates on record are the ones
+     * from when the car was still at the kerb.
+     */
+    suspend fun snapshot(now: Instant = Instant.now()): Fix? {
+        if (!hasLocationPermission()) return null
+        return cachedFix(now)
     }
 
     /**
@@ -108,12 +143,18 @@ class LocationFixer @Inject constructor(
         )
     }
 
-    /** The free option: whatever fix the system already has, if it is fresh and tight enough. */
-    private suspend fun cachedFix(now: Instant): Fix? {
+    /** The free option: whatever fix the system already has, if it is close enough to [anchor]. */
+    private suspend fun cachedFix(anchor: Instant): Fix? {
         val last = runCatching { client.lastLocation.await() }.getOrNull() ?: return null
-        val age = Duration.between(Instant.ofEpochMilli(last.time), now)
+        val taken = Instant.ofEpochMilli(last.time)
+        // Positive when the fix predates the anchor, which is the direction we want: the car was
+        // still there. Negative means it was taken after the car stopped, and the tolerance that
+        // way is a couple of seconds rather than half a minute — past that it is the walk away
+        // from the car, and accepting it is how a pin ends up on the street the user left by.
+        val before = Duration.between(taken, anchor)
 
-        if (age > CACHE_MAX_AGE) return null
+        if (before > CACHE_MAX_AGE) return null
+        if (before.isNegative && before.negated() > CACHE_MAX_LEAD) return null
         if (!last.hasAccuracy() || last.accuracy > CACHE_MAX_ACCURACY_METERS) return null
 
         return Fix(
@@ -160,9 +201,9 @@ class LocationFixer @Inject constructor(
         )
     }
 
-    private suspend fun breadcrumbFix(now: Instant): Fix? {
+    private suspend fun breadcrumbFix(anchor: Instant): Fix? {
         val crumb = settings.readBreadcrumb() ?: return null
-        if (Duration.between(crumb.at, now) > BREADCRUMB_MAX_AGE) return null
+        if (Duration.between(crumb.at, anchor) > BREADCRUMB_MAX_AGE) return null
 
         return Fix(
             point = LatLng(crumb.latitude, crumb.longitude),
@@ -176,6 +217,12 @@ class LocationFixer @Inject constructor(
         val FIX_TIMEOUT: Duration = Duration.ofSeconds(20)
         val TIMEOUT_GRACE: Duration = Duration.ofSeconds(5)
         val CACHE_MAX_AGE: Duration = Duration.ofSeconds(30)
+
+        /**
+         * How far *after* the car stopped a cached fix may have been taken. Only wide enough to
+         * absorb clock skew between the fused provider and our own timestamps.
+         */
+        val CACHE_MAX_LEAD: Duration = Duration.ofSeconds(2)
 
         /** Fresh means fresh. Long enough only to reuse a fix that arrived moments ago. */
         val CURRENT_MAX_AGE: Duration = Duration.ofSeconds(2)

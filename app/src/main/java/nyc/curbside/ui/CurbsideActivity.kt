@@ -39,7 +39,6 @@ import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.launch
 import nyc.curbside.asp.AspDatasetInstaller
-import nyc.curbside.detect.CarConnectionMonitor
 import nyc.curbside.detect.DriveCoordinator
 import nyc.curbside.ui.home.HomeScreen
 import nyc.curbside.ui.map.MapScreen
@@ -50,28 +49,17 @@ import nyc.curbside.ui.settings.SettingsScreen
 @AndroidEntryPoint
 class CurbsideActivity : ComponentActivity() {
 
-    @Inject lateinit var carConnection: CarConnectionMonitor
-
     @Inject lateinit var coordinator: DriveCoordinator
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // While the app is in the foreground we get the sharpest possible drive signal for free.
-        // It stops with the activity; the always-on detection does not depend on it.
-        carConnection.start(lifecycleScope)
-
         // Flush anything the system dropped while the app was not running.
         lifecycleScope.launch { coordinator.reconcile() }
         AspDatasetInstaller.schedule(this)
 
         setContent { CurbsideTheme { CurbsideApp() } }
-    }
-
-    override fun onDestroy() {
-        lifecycleScope.launch { carConnection.stop() }
-        super.onDestroy()
     }
 }
 

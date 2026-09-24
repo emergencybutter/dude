@@ -12,10 +12,13 @@ import java.time.Instant
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import nyc.curbside.CurbsideLog
+import nyc.curbside.asp.NYC
 import nyc.curbside.di.ApplicationScope
 import nyc.curbside.drive.DriveSignal
 import nyc.curbside.drive.SignalKind
 import nyc.curbside.drive.SignalSource
+import nyc.curbside.notify.MoveReminderScheduler
 
 /**
  * Base for the detection receivers.
@@ -77,7 +80,11 @@ class ActivityTransitionReceiver : CoroutineBroadcastReceiver() {
             kind?.let { DriveSignal(SignalSource.ACTIVITY_RECOGNITION, it, Instant.now()) }
         }
 
-        if (signals.isEmpty()) return
+        if (signals.isEmpty()) {
+            CurbsideLog.d("activity transitions arrived but none were ones we watch for")
+            return
+        }
+        CurbsideLog.i("activity recognition: ${signals.joinToString { it.kind.name }}")
         goAsyncIn { signals.forEach { coordinator.onSignal(it) } }
     }
 }
@@ -110,9 +117,18 @@ class CarBluetoothReceiver : CoroutineBroadcastReceiver() {
         val device: BluetoothDevice? = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
         val address = device?.address ?: return
 
+        val edge = if (kind == SignalKind.DRIVE_STARTED) "connected" else "disconnected"
+
         goAsyncIn {
             val vehicle = settings.readVehicles().firstOrNull { it.bluetoothAddress == address }
-                ?: return@goAsyncIn
+            if (vehicle == null) {
+                // Far and away the commonest reason a real drive goes unnoticed: the car's stereo
+                // was never nominated in Settings, so every edge it produces is thrown away here.
+                CurbsideLog.i("a bluetooth device $edge, but it is not one of your cars — ignored")
+                CurbsideLog.d("  the device was $address; nominate it in Settings if it is a car")
+                return@goAsyncIn
+            }
+            CurbsideLog.i("${vehicle.name} $edge")
             if (kind == SignalKind.DRIVE_STARTED) settings.setDriveStereo(vehicle.bluetoothAddress)
             coordinator.onSignal(DriveSignal(SignalSource.CAR_BLUETOOTH, kind, Instant.now()))
         }
@@ -141,10 +157,28 @@ class BootReceiver : CoroutineBroadcastReceiver() {
 
     @Inject lateinit var coordinator: DriveCoordinator
 
+    @Inject lateinit var dao: nyc.curbside.data.db.ParkingEventDao
+
+    @Inject lateinit var reminders: MoveReminderScheduler
+
     override fun onReceive(context: Context, intent: Intent) {
         goAsyncIn {
             registrar.ensureRegistered()
             coordinator.reconcile()
+
+            // The move reminders went down with everything else. That used to be close to
+            // harmless, because the only alarm outstanding was an hour long at most; a warning
+            // armed a day ahead is long enough that a reboot under it is ordinary, and losing it
+            // silently is exactly the failure the day's notice exists to prevent.
+            val active = dao.active()
+            active.forEach { event ->
+                val moveBy = event.moveByEpochMillis ?: return@forEach
+                reminders.schedule(event.id, Instant.ofEpochMilli(moveBy).atZone(NYC))
+            }
+            CurbsideLog.i(
+                "restarted: detection re-registered, reminders re-armed for " +
+                    "${active.count { it.moveByEpochMillis != null }} of ${active.size} parked cars",
+            )
         }
     }
 }

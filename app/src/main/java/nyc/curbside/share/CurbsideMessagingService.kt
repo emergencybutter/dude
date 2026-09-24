@@ -10,12 +10,14 @@ import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import nyc.curbside.asp.NYC
 import nyc.curbside.data.CurbsideSettings
 import nyc.curbside.data.db.ParkingEventDao
 import nyc.curbside.data.db.ParkingEventEntity
 import nyc.curbside.di.ApplicationScope
 import nyc.curbside.data.VehicleRepository
 import nyc.curbside.drive.VehicleEvidence
+import nyc.curbside.notify.MoveReminderScheduler
 import nyc.curbside.notify.Notifications
 
 /**
@@ -38,6 +40,8 @@ class CurbsideMessagingService : FirebaseMessagingService() {
     @Inject lateinit var dao: ParkingEventDao
 
     @Inject lateinit var vehicles: VehicleRepository
+
+    @Inject lateinit var reminders: MoveReminderScheduler
 
     @Inject @ApplicationScope lateinit var scope: CoroutineScope
 
@@ -67,8 +71,9 @@ class CurbsideMessagingService : FirebaseMessagingService() {
             // difference between "your partner parked" and "your partner has moved your car",
             // which is the whole point of naming cars in the first place.
             val ourCar = vehicles.byId(payload.vehicleId)
+            val active = dao.active()
             val wasParkedElsewhere = payload.vehicleId != null &&
-                dao.active().any { it.vehicleId == payload.vehicleId && it.receivedFrom == null }
+                active.any { it.vehicleId == payload.vehicleId && it.receivedFrom == null }
 
             dao.upsert(
                 ParkingEventEntity(
@@ -88,9 +93,20 @@ class CurbsideMessagingService : FirebaseMessagingService() {
                 ),
             )
 
-            // Whatever we were holding for this car is now out of date wherever it came from.
-            payload.vehicleId?.let {
-                dao.clearCurrentForVehicle(it, payload.parkedAtEpochMillis, exceptId = eventId)
+            // Whatever we were holding for this car is now out of date wherever it came from, and
+            // so are its alarms: a day-ahead warning about a curb the car left this morning is
+            // worse than no warning, because it sends someone to the wrong street.
+            payload.vehicleId?.let { vehicleId ->
+                dao.clearCurrentForVehicle(vehicleId, payload.parkedAtEpochMillis, exceptId = eventId)
+                active.filter { it.vehicleId == vehicleId && it.id != eventId }
+                    .forEach { reminders.cancel(it.id) }
+            }
+
+            // The reminders are armed here too, not only on the phone that did the parking. A
+            // household shares a spot so that whoever is free can move the car, and the person who
+            // is free is routinely not the person who parked it.
+            payload.moveByEpochMillis?.let {
+                reminders.schedule(eventId, Instant.ofEpochMilli(it).atZone(NYC))
             }
 
             val where = payload.address ?: payload.curbLabel.orEmpty()

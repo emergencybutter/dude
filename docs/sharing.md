@@ -34,6 +34,17 @@ for it before — including a record the other phone produced. That is what make
 arrive as a notification rather than as two contradictory pins: the app was holding a spot for that
 car, and something else turned up for it from someone else.
 
+Closing out a record takes its reminders down with it. That used to be a tidiness matter and is now
+a correctness one: a warning can be armed a full day ahead, which is long enough to outlive the spot
+it was about and send someone to a curb the car left yesterday.
+
+## Both phones warn
+
+A received parking arms the same two reminders the phone that recorded it did. A household shares a
+spot so that whoever is free can move the car, and the person who is free is routinely not the
+person who parked it — a reminder that only ever reaches the driver is a reminder aimed at the one
+household member already known to be busy.
+
 ## The two paths
 
 **Manual share** is an ordinary Android share sheet carrying a maps link. It works with anyone, needs

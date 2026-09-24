@@ -77,43 +77,69 @@ class HouseholdRepository @Inject constructor(
 
     /** Creates a household and returns the payload to render as a QR code. */
     suspend fun createHousehold(displayName: String): PairingInvite? {
+        if (!isAvailable) return null
         val uid = signInIfNeeded() ?: return null
         val householdId = firestore.collection(HOUSEHOLDS).document().id
         val key = crypto.generateHouseholdKey()
-        keys.store(key)
 
-        firestore.collection(HOUSEHOLDS).document(householdId)
-            .set(
-                mapOf(
-                    "createdAt" to Instant.now().toEpochMilli(),
-                    "members" to mapOf(uid to displayName),
-                ),
-            ).await()
+        return runCatching {
+            firestore.collection(HOUSEHOLDS).document(householdId)
+                .set(
+                    mapOf(
+                        "createdAt" to Instant.now().toEpochMilli(),
+                        "members" to mapOf(uid to displayName),
+                    ),
+                ).await()
 
-        settings.setHouseholdId(householdId)
+            // Only once the household exists on the server, so a write that fails does not leave
+            // this device holding a key for a household that was never created — which would make
+            // every envelope it has already stored unreadable.
+            keys.store(key)
+            settings.setHouseholdId(householdId)
 
+            invite()
+        }.getOrNull()
+    }
+
+    /**
+     * Mints a fresh short-lived invite for the household this device is already in.
+     *
+     * Separate from [createHousehold] because showing a code a second time — pairing a third
+     * device, or re-pairing after a phone is replaced — must not mint a new household and a new
+     * key. That would orphan the first one and make every spot already shared unreadable.
+     */
+    suspend fun invite(): PairingInvite? {
+        if (!isAvailable) return null
+        val householdId = settings.readHouseholdId() ?: return null
+        val uid = signInIfNeeded() ?: return null
+        // The key travels in the QR code and nowhere else.
+        val keyBase64 = keys.exportForPairing() ?: return null
         val code = inviteCode()
-        firestore.collection(INVITES).document(code)
-            .set(
-                mapOf(
-                    "householdId" to householdId,
-                    "createdBy" to uid,
-                    "expiresAt" to Instant.now().plusSeconds(INVITE_TTL_SECONDS).toEpochMilli(),
-                ),
-            ).await()
+        val expiresAt = Instant.now().plusSeconds(INVITE_TTL_SECONDS).toEpochMilli()
 
-        return PairingInvite(
-            householdId = householdId,
-            inviteCode = code,
-            // The key travels in the QR code and nowhere else.
-            keyBase64 = keys.exportForPairing() ?: return null,
-        )
+        return runCatching {
+            firestore.collection(INVITES).document(code)
+                .set(
+                    mapOf(
+                        "householdId" to householdId,
+                        "createdBy" to uid,
+                        "expiresAt" to expiresAt,
+                    ),
+                ).await()
+
+            PairingInvite(
+                householdId = householdId,
+                inviteCode = code,
+                keyBase64 = keyBase64,
+                expiresAtEpochMillis = expiresAt,
+            )
+        }.getOrNull()
     }
 
     /** Joins a household from a scanned invite. */
     suspend fun join(invite: PairingInvite, displayName: String): Boolean {
+        if (!isAvailable) return false
         val uid = signInIfNeeded() ?: return false
-        if (!keys.importFromPairing(invite.keyBase64)) return false
 
         return runCatching {
             val inviteDoc = firestore.collection(INVITES).document(invite.inviteCode).get().await()
@@ -121,6 +147,10 @@ class HouseholdRepository @Inject constructor(
             val expiresAt = inviteDoc.getLong("expiresAt") ?: 0L
             if (householdId != invite.householdId) return false
             if (expiresAt < Instant.now().toEpochMilli()) return false
+
+            // Only once the invite has checked out. Storing it first would leave a device that
+            // scanned an expired code holding the key to a household it never joined.
+            if (!keys.importFromPairing(invite.keyBase64)) return false
 
             firestore.collection(HOUSEHOLDS).document(householdId)
                 .set(mapOf("members" to mapOf(uid to displayName)), SetOptions.merge())
@@ -238,10 +268,20 @@ data class PairingInvite(
     val householdId: String,
     val inviteCode: String,
     val keyBase64: String,
+    /**
+     * When the invite document stops being redeemable, so the screen can say how long the code is
+     * good for. Local only — it is not in the QR, because the server's copy is what [join] is
+     * checked against and a number carried in the code would just be a number the scanner chose.
+     */
+    val expiresAtEpochMillis: Long = 0L,
 ) {
     /**
      * The QR payload. A custom scheme rather than an https link on purpose: a link would be
      * followable, and this is a secret that should never be pasted into a browser or a chat.
+     *
+     * Nothing here is escaped, and nothing needs to be: the household id is a Firestore
+     * auto-id, the invite code comes from [HouseholdRepository]'s alphabet, and the key is
+     * URL-safe Base64. All three are query-safe as they stand.
      */
     fun toQrPayload(): String = "curbside://pair?h=$householdId&c=$inviteCode&k=$keyBase64"
 

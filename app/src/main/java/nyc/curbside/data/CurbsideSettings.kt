@@ -40,6 +40,7 @@ class CurbsideSettings @Inject constructor(
         val DRIVE_STARTED_BY = stringPreferencesKey("drive_started_by")
         val DRIVE_CONFIRM_AT = longPreferencesKey("drive_confirm_at")
         val DRIVE_ENDED_BY = stringPreferencesKey("drive_ended_by")
+        val DRIVE_ENDED_AT = longPreferencesKey("drive_ended_at")
 
         val CAR_BLUETOOTH_ADDRESS = stringPreferencesKey("car_bluetooth_address")
         val CAR_BLUETOOTH_NAME = stringPreferencesKey("car_bluetooth_name")
@@ -54,6 +55,15 @@ class CurbsideSettings @Inject constructor(
         val DRIVE_ORIGIN_LON = stringPreferencesKey("drive_origin_lon")
         val DRIVE_ORIGIN_AT = longPreferencesKey("drive_origin_at")
 
+        /**
+         * Where the car was when the drive-ended signal arrived, held while the debounce runs.
+         * Cleared the moment the confirmation resolves either way.
+         */
+        val PARK_SNAPSHOT_LAT = stringPreferencesKey("park_snapshot_lat")
+        val PARK_SNAPSHOT_LON = stringPreferencesKey("park_snapshot_lon")
+        val PARK_SNAPSHOT_AT = longPreferencesKey("park_snapshot_at")
+        val PARK_SNAPSHOT_ACCURACY = stringPreferencesKey("park_snapshot_accuracy")
+
         val BREADCRUMB_LAT = stringPreferencesKey("breadcrumb_lat")
         val BREADCRUMB_LON = stringPreferencesKey("breadcrumb_lon")
         val BREADCRUMB_AT = longPreferencesKey("breadcrumb_at")
@@ -66,6 +76,7 @@ class CurbsideSettings @Inject constructor(
         val ASP_DATASET_VERSION = stringPreferencesKey("asp_dataset_version")
         val SUSPENSIONS_JSON = stringPreferencesKey("suspensions_json")
         val TRANSITIONS_REGISTERED = booleanPreferencesKey("transitions_registered")
+        val ANDROID_AUTO_SEEN = booleanPreferencesKey("android_auto_seen")
         val PERMISSIONS_EXPLAINED = booleanPreferencesKey("permissions_explained")
     }
 
@@ -84,6 +95,8 @@ class CurbsideSettings @Inject constructor(
                 ?: prefs.remove(Keys.DRIVE_CONFIRM_AT)
             state.endedBy?.let { prefs[Keys.DRIVE_ENDED_BY] = it.name }
                 ?: prefs.remove(Keys.DRIVE_ENDED_BY)
+            state.endedAt?.let { prefs[Keys.DRIVE_ENDED_AT] = it.toEpochMilli() }
+                ?: prefs.remove(Keys.DRIVE_ENDED_AT)
         }
     }
 
@@ -94,6 +107,7 @@ class CurbsideSettings @Inject constructor(
         startedBy = this[Keys.DRIVE_STARTED_BY]?.let { runCatching { SignalSource.valueOf(it) }.getOrNull() },
         confirmAt = this[Keys.DRIVE_CONFIRM_AT]?.let(Instant::ofEpochMilli),
         endedBy = this[Keys.DRIVE_ENDED_BY]?.let { runCatching { SignalSource.valueOf(it) }.getOrNull() },
+        endedAt = this[Keys.DRIVE_ENDED_AT]?.let(Instant::ofEpochMilli),
     )
 
     /** The stereo the user nominated as "my car". Null until they pick one in Settings. */
@@ -195,6 +209,44 @@ class CurbsideSettings @Inject constructor(
      * [nyc.curbside.location.PassiveBreadcrumb]) and is the only thing that saves the capture when
      * the car ends up in an underground garage.
      */
+    /**
+     * The position the car was at when a drive-ended signal arrived.
+     *
+     * Exists because the app decides *whether* the car parked later than it actually parked — a
+     * source's debounce runs first, and the walking-detected shortcut fires later still. Both
+     * used to move the pin, because the capture asked where the phone was at the moment the
+     * decision resolved. This holds the answer from the moment of the signal instead, so the
+     * debounce can take as long as it likes without dragging the pin down the street.
+     *
+     * Written on entering the confirmation, cleared on leaving it by any route.
+     */
+    suspend fun readParkSnapshot(): Breadcrumb? {
+        val prefs = context.dataStore.data.first()
+        val lat = prefs[Keys.PARK_SNAPSHOT_LAT]?.toDoubleOrNull() ?: return null
+        val lon = prefs[Keys.PARK_SNAPSHOT_LON]?.toDoubleOrNull() ?: return null
+        val at = prefs[Keys.PARK_SNAPSHOT_AT] ?: return null
+        val accuracy = prefs[Keys.PARK_SNAPSHOT_ACCURACY]?.toFloatOrNull() ?: return null
+        return Breadcrumb(lat, lon, accuracy, Instant.ofEpochMilli(at))
+    }
+
+    suspend fun writeParkSnapshot(snapshot: Breadcrumb) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.PARK_SNAPSHOT_LAT] = snapshot.latitude.toString()
+            prefs[Keys.PARK_SNAPSHOT_LON] = snapshot.longitude.toString()
+            prefs[Keys.PARK_SNAPSHOT_AT] = snapshot.at.toEpochMilli()
+            prefs[Keys.PARK_SNAPSHOT_ACCURACY] = snapshot.accuracyMeters.toString()
+        }
+    }
+
+    suspend fun clearParkSnapshot() {
+        context.dataStore.edit { prefs ->
+            prefs.remove(Keys.PARK_SNAPSHOT_LAT)
+            prefs.remove(Keys.PARK_SNAPSHOT_LON)
+            prefs.remove(Keys.PARK_SNAPSHOT_AT)
+            prefs.remove(Keys.PARK_SNAPSHOT_ACCURACY)
+        }
+    }
+
     val breadcrumb: Flow<Breadcrumb?> = context.dataStore.data.map { it.toBreadcrumb() }
 
     suspend fun readBreadcrumb(): Breadcrumb? = context.dataStore.data.first().toBreadcrumb()
@@ -258,6 +310,19 @@ class CurbsideSettings @Inject constructor(
     suspend fun readTransitionsRegistered(): Boolean = context.dataStore.data.first()[Keys.TRANSITIONS_REGISTERED] ?: false
     suspend fun setTransitionsRegistered(registered: Boolean) {
         context.dataStore.edit { it[Keys.TRANSITIONS_REGISTERED] = registered }
+    }
+
+    /**
+     * Whether projection has ever been observed on this phone.
+     *
+     * Sticky on purpose. The question the settings screen asks is "is this signal available to
+     * you", not "are you plugged in right now" — and the screen is read indoors, with the car
+     * parked outside, which is precisely when a live reading would say no. Once a head unit has
+     * been seen the capability is established, so it is recorded and never cleared.
+     */
+    suspend fun readAndroidAutoSeen(): Boolean = context.dataStore.data.first()[Keys.ANDROID_AUTO_SEEN] ?: false
+    suspend fun setAndroidAutoSeen() {
+        context.dataStore.edit { it[Keys.ANDROID_AUTO_SEEN] = true }
     }
 
     /**

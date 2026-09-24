@@ -22,6 +22,9 @@
         android:name="android.permission.BLUETOOTH"
         android:maxSdkVersion="30" />
 
+    <!-- Reading the pairing QR off the other phone. Asked for at the scanner, never at launch. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
@@ -41,6 +44,11 @@
 
     <uses-feature
         android:name="android.hardware.location.gps"
+        android:required="false" />
+
+    <!-- Only pairing needs a camera, and pairing is optional. -->
+    <uses-feature
+        android:name="android.hardware.camera.any"
         android:required="false" />
 
     <application

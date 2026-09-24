@@ -26,6 +26,14 @@ data class DriveState(
     /** When the pending park confirmation is due to fire, if [phase] is [DrivePhase.CONFIRMING_PARK]. */
     val confirmAt: Instant? = null,
     val endedBy: SignalSource? = null,
+    /**
+     * When the end signal that opened this confirmation was timestamped.
+     *
+     * Kept separately from [confirmAt] because the debounce answers "did the car park", and the
+     * capture separately needs "when" — and the honest answer to the second is the moment the
+     * signal arrived, not the moment the alarm got round to firing.
+     */
+    val endedAt: Instant? = null,
 )
 
 /** What the Android layer should do about a state change. */
@@ -51,6 +59,15 @@ sealed interface DriveAction {
         val droveFor: Duration,
         /** True when the machine skipped the debounce because the user was seen walking. */
         val confirmedOnFoot: Boolean,
+        /**
+         * When the car actually stopped — the moment the end signal was timestamped, not the
+         * moment this action was produced.
+         *
+         * The two differ by the source's debounce, and the gap is the distance the user has walked
+         * since. Anything judging how stale a position is has to measure against this, or it will
+         * prefer a fresh fix of the pavement to a slightly older one of the car.
+         */
+        val at: Instant,
     ) : DriveAction
 
     /**
@@ -75,12 +92,12 @@ class DriveStateMachine(
      * A "drive" shorter than this never produces a parking pin. Covers sitting in the car with the
      * stereo on, and moving the car ten feet.
      */
-    private val minimumTrip: Duration = Duration.ofSeconds(90),
+    val minimumTrip: Duration = Duration.ofSeconds(90),
     /**
      * If we somehow never see the end of a drive, give up rather than believing the car is in
      * motion forever and holding a passive location subscription open.
      */
-    private val maximumTrip: Duration = Duration.ofHours(12),
+    val maximumTrip: Duration = Duration.ofHours(12),
 ) {
 
     fun onSignal(state: DriveState, signal: DriveSignal): DriveTransition = when (signal.kind) {
@@ -99,7 +116,13 @@ class DriveStateMachine(
         val due = state.confirmAt ?: return DriveTransition(state, DriveAction.None)
         if (now.isBefore(due)) return DriveTransition(state, DriveAction.None)
 
-        return park(state, state.endedBy ?: SignalSource.ACTIVITY_RECOGNITION, now, onFoot = false)
+        return park(
+            state,
+            state.endedBy ?: SignalSource.ACTIVITY_RECOGNITION,
+            now,
+            onFoot = false,
+            stoppedAt = state.endedAt ?: now,
+        )
     }
 
     private fun onDriveStarted(state: DriveState, signal: DriveSignal): DriveTransition = when (state.phase) {
@@ -148,6 +171,7 @@ class DriveStateMachine(
                             phase = DrivePhase.CONFIRMING_PARK,
                             confirmAt = at,
                             endedBy = signal.source,
+                            endedAt = signal.at,
                         ),
                         DriveAction.ScheduleParkCheck(at),
                     )
@@ -164,7 +188,13 @@ class DriveStateMachine(
         DrivePhase.IDLE -> DriveTransition(state, DriveAction.None)
 
         DrivePhase.CONFIRMING_PARK ->
-            park(state, state.endedBy ?: signal.source, signal.at, onFoot = true)
+            park(
+                state,
+                state.endedBy ?: signal.source,
+                signal.at,
+                onFoot = true,
+                stoppedAt = state.endedAt ?: signal.at,
+            )
 
         DrivePhase.DRIVING -> {
             val started = state.driveStartedAt
@@ -182,11 +212,23 @@ class DriveStateMachine(
         endedBy: SignalSource,
         at: Instant,
         onFoot: Boolean,
+        /**
+         * When the car actually stopped, where that is known to be earlier than [at] — the end
+         * signal's own timestamp, as against the moment the debounce or the walking shortcut got
+         * round to acting on it. Only the recorded position cares about the difference; how long
+         * the drive lasted is still measured to [at], since that is when we stopped watching.
+         */
+        stoppedAt: Instant = at,
     ): DriveTransition {
         val droveFor = state.driveStartedAt?.let { Duration.between(it, at) } ?: Duration.ZERO
         return DriveTransition(
             DriveState(),
-            DriveAction.CapturePark(endedBy = endedBy, droveFor = droveFor, confirmedOnFoot = onFoot),
+            DriveAction.CapturePark(
+                endedBy = endedBy,
+                droveFor = droveFor,
+                confirmedOnFoot = onFoot,
+                at = stoppedAt,
+            ),
         )
     }
 

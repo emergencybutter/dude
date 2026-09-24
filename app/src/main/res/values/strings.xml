@@ -5,6 +5,7 @@
 
     <string name="channel_parked">Parking spot recorded</string>
     <string name="channel_move">Move your car</string>
+    <string name="channel_move_ahead">Street cleaning tomorrow</string>
     <string name="channel_shared">Shared by your household</string>
     <string name="channel_capture">Finding your car</string>
 
@@ -17,6 +18,8 @@
 
     <string name="notification_move_title">Move your car in %1$d minutes</string>
     <string name="notification_move_text">%1$s — street cleaning starts at %2$s</string>
+    <string name="notification_move_ahead_title">Street cleaning %1$s</string>
+    <string name="notification_move_ahead_text">%1$s — a day to find another spot</string>
     <string name="action_walk_to_car">Walk to car</string>
 
     <string name="notification_partner_parked">%1$s parked</string>

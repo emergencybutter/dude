@@ -12,6 +12,7 @@ import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
+import nyc.curbside.CurbsideLog
 import nyc.curbside.asp.AspRepository
 import nyc.curbside.asp.CurbEvaluation
 import nyc.curbside.asp.CurbMatch
@@ -78,6 +79,12 @@ class ParkingRepository @Inject constructor(
         val origin = settings.readDriveOrigin()
         val travelled = origin?.let { Geo.haversineMeters(LatLng(it.latitude, it.longitude), fix.point) }
         if (DrivePlausibility.looksLikeWalking(travelled, droveFor, endedBy)) {
+            // Silent until now, and the most confusing way for the app to do nothing: the drive was
+            // detected, the fix was taken, and then the pin was thrown away on purpose.
+            CurbsideLog.i(
+                "parking discarded: ${travelled?.toInt()}m in ${droveFor?.seconds}s is walking pace, " +
+                    "keeping the spot we already had",
+            )
             vehicles.forgetDrive()
             return@withContext null
         }
@@ -114,7 +121,22 @@ class ParkingRepository @Inject constructor(
         dao.upsert(event)
         // This car's previous spot is now history — including one a partner recorded, since the car
         // cannot be in two streets at once.
-        dao.clearCurrentForVehicle(event.vehicleId, fix.at.toEpochMilli(), exceptId = event.id)
+        supersedePrevious(event.vehicleId, fix.at.toEpochMilli(), exceptId = event.id)
+
+        // No street, no coordinates, no curb id — see [CurbsideLog]. What is here is what tells you
+        // whether the capture worked: how good the fix was, whether the rules engine found the curb,
+        // and how long the car has before it has to move.
+        CurbsideLog.i(
+            "parked: ${fix.quality} fix ±${fix.accuracyMeters.toInt()}m, " +
+                "${matches.size} candidate curbs" +
+                (if (needsSide) ", side needs confirming" else "") +
+                ", " + (
+                    best?.second?.moveBy
+                        ?.let { "must move in ${Duration.between(now, it).toMinutes()}m" }
+                        ?: "no move-by time"
+                    ) +
+                ", car ${identified?.let { "identified by ${it.evidence}" } ?: "unknown"}",
+        )
 
         best?.second?.moveBy?.let { reminders.schedule(event.id, it) }
         Notifications.postParked(context, event, best?.second, needsSide)
@@ -178,10 +200,29 @@ class ParkingRepository @Inject constructor(
     suspend fun assignVehicle(eventId: String, vehicleId: String) = withContext(Dispatchers.IO) {
         val event = dao.byId(eventId) ?: return@withContext
         dao.assignVehicle(eventId, vehicleId, VehicleEvidence.STATED.name)
-        dao.clearCurrentForVehicle(vehicleId, event.parkedAt, exceptId = eventId)
+        supersedePrevious(vehicleId, event.parkedAt, exceptId = eventId)
         if (event.sharedAt == null && !event.shareSuppressed && settings.readAutoShareEnabled()) {
             share.enqueue(eventId)
         }
+    }
+
+    /**
+     * Closes out wherever this car was before, and drops the reminders that went with it.
+     *
+     * The alarms have to come down with the row. A warning armed a day ahead outlives the spot it
+     * was about by long enough to actually fire for it, and being sent to a curb the car left
+     * yesterday is worse than not being warned at all.
+     */
+    private suspend fun supersedePrevious(vehicleId: String?, at: Long, exceptId: String) {
+        // Read before the update, and matched on the same terms the query uses: an unnamed parking
+        // can only supersede other unnamed ones of our own, because nothing says which car it was.
+        val stale = dao.active().filter { prior ->
+            prior.id != exceptId &&
+                if (vehicleId == null) prior.vehicleId == null && prior.receivedFrom == null
+                else prior.vehicleId == vehicleId
+        }
+        dao.clearCurrentForVehicle(vehicleId, at, exceptId = exceptId)
+        stale.forEach { reminders.cancel(it.id) }
     }
 
     fun observeActive(): Flow<List<ParkingEventEntity>> = dao.observeActive()

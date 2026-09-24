@@ -20,6 +20,7 @@ Curbside inverts it. Nothing runs unless something happened.
 | Always | Two manifest Bluetooth receivers | Zero until the system delivers a broadcast |
 | A drive starts | Passive location subscription | Never causes a fix; only receives ones other apps already caused |
 | A drive ends | One alarm (<60s), then one expedited worker | Seconds of CPU, at most one GPS session |
+| A car is parked | Two alarms: a day before the cleaning window, and an hour before | Two wake-ups over a whole parking. The day-ahead one is inexact, so the system batches it |
 | Weekly, on wifi, charged | Maintenance worker: suspension calendar, dataset check, share retries | One HTTP round trip, usually a 304-equivalent no-op |
 | Monthly, on wifi | Curb dataset refresh, if a new version exists | A few MB, once |
 | Map open | Viewport query + evaluation on camera idle, status recompute every 60s | Only while the user is looking at it |

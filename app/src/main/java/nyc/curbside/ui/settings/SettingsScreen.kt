@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -35,10 +36,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import nyc.curbside.share.PairingInvite
 import nyc.curbside.ui.CarStereoChooser
 import nyc.curbside.ui.hasBluetoothPermission
 import nyc.curbside.ui.carStereos
 import nyc.curbside.ui.BLUETOOTH_PERMISSION
+import nyc.curbside.ui.share.QrCode
+import nyc.curbside.ui.share.QrScannerDialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable
@@ -194,6 +198,12 @@ private fun SharingCard(state: SettingsUiState, viewModel: SettingsViewModel) {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.outline,
                 )
+            } else if (state.pendingInvite != null) {
+                // Creating the household is what puts this device in one, so the code has to be
+                // shown from its own branch: by the time it exists, householdId is already set and
+                // the joined layout below would otherwise have replaced the button that asked
+                // for it.
+                PairingCode(state.pendingInvite, onDone = viewModel::onDismissPairingCode)
             } else if (state.householdId == null) {
                 Text(
                     "Pair a second phone to share parking spots automatically. Locations are " +
@@ -201,7 +211,10 @@ private fun SharingCard(state: SettingsUiState, viewModel: SettingsViewModel) {
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = viewModel::onCreateHousehold) { Text("Show pairing code") }
+                    OutlinedButton(
+                        onClick = viewModel::onShowPairingCode,
+                        enabled = !state.busy,
+                    ) { Text("Show pairing code") }
                     OutlinedButton(onClick = viewModel::onScanPairing) { Text("Scan a code") }
                 }
             } else {
@@ -220,9 +233,63 @@ private fun SharingCard(state: SettingsUiState, viewModel: SettingsViewModel) {
                     }
                     Switch(checked = state.autoShare, onCheckedChange = viewModel::onAutoShareChanged)
                 }
-                OutlinedButton(onClick = viewModel::onLeaveHousehold) { Text("Leave household") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Still offered once paired: a third device, or a replacement phone, joins the
+                    // same household rather than starting another one.
+                    OutlinedButton(
+                        onClick = viewModel::onShowPairingCode,
+                        enabled = !state.busy,
+                    ) { Text("Add another phone") }
+                    OutlinedButton(onClick = viewModel::onLeaveHousehold) { Text("Leave household") }
+                }
+            }
+
+            state.pairingError?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
         }
+    }
+
+    if (state.scanning) {
+        QrScannerDialog(
+            onScanned = viewModel::onPairingScanned,
+            onDismiss = viewModel::onScannerDismissed,
+        )
+    }
+}
+
+@Composable
+private fun PairingCode(invite: PairingInvite, onDone: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            "On the other phone, open Curbside › Settings › Sharing and tap “Scan a code”.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+
+        QrCode(invite.toQrPayload(), Modifier.size(240.dp))
+
+        Text(
+            "Good once, for ${minutesLeft(invite.expiresAtEpochMillis)}. The square carries the " +
+                "key that decrypts your spots — it never reaches our server, so keep it out of " +
+                "screenshots and group chats.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+
+        OutlinedButton(onClick = onDone) { Text("Done") }
+    }
+}
+
+private fun minutesLeft(expiresAtEpochMillis: Long): String {
+    val minutes = (expiresAtEpochMillis - System.currentTimeMillis()) / 60_000L
+    return when {
+        minutes >= 2L -> "$minutes minutes"
+        minutes >= 1L -> "another minute"
+        else -> "a few more seconds"
     }
 }
 

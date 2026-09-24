@@ -15,6 +15,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.tasks.await
+import nyc.curbside.CurbsideLog
 import nyc.curbside.data.CurbsideSettings
 
 /**
@@ -62,6 +63,7 @@ class DetectionRegistrar @Inject constructor(
      */
     suspend fun ensureRegistered(): Boolean {
         if (!hasPermission()) {
+            CurbsideLog.w("activity transitions not registered: no ACTIVITY_RECOGNITION permission")
             settings.setTransitionsRegistered(false)
             return false
         }
@@ -70,8 +72,10 @@ class DetectionRegistrar @Inject constructor(
                 .requestActivityTransitionUpdates(ActivityTransitionRequest(transitions), pendingIntent())
                 .await()
             settings.setTransitionsRegistered(true)
+            CurbsideLog.d("activity transitions registered")
             true
         }.getOrElse {
+            CurbsideLog.w("activity transitions could not be registered — detection is down to bluetooth", it)
             // Play Services missing or out of date. Bluetooth and manual capture still work, and
             // the settings screen surfaces the degraded state rather than pretending all is well.
             settings.setTransitionsRegistered(false)

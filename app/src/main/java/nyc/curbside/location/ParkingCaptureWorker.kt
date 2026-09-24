@@ -8,8 +8,10 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import java.time.Duration
+import java.time.Instant
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import nyc.curbside.CurbsideLog
 import nyc.curbside.data.ParkingRepository
 import nyc.curbside.drive.SignalSource
 import nyc.curbside.notify.Notifications
@@ -27,6 +29,7 @@ class ParkingCaptureWorker @AssistedInject constructor(
     @Assisted params: WorkerParameters,
     private val fixer: LocationFixer,
     private val parking: ParkingRepository,
+    private val settings: nyc.curbside.data.CurbsideSettings,
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun getForegroundInfo(): ForegroundInfo {
@@ -55,8 +58,33 @@ class ParkingCaptureWorker @AssistedInject constructor(
             .takeIf { it >= 0 }
             ?.let(Duration::ofSeconds)
 
-        val fix = fixer.capture()
+        // When the car stopped, as against when the machine finished deciding it had. For a
+        // zero-debounce source these are the same instant; for Android Auto they are twenty
+        // seconds and a walk apart.
+        val endedAt = inputData.getLong(KEY_ENDED_AT, -1L)
+            .takeIf { it >= 0 }
+            ?.let(Instant::ofEpochMilli)
+            ?: Instant.now()
+
+        // The position held when the end signal arrived, if there was one. Consumed here whatever
+        // happens next, so a snapshot can never outlive its own drive and be spent on the following
+        // one — a capture with a stale spot on it is worse than a capture with none.
+        val snapshot = settings.readParkSnapshot()
+        settings.clearParkSnapshot()
+
+        val fix = fixer.capture(
+            endedAt = endedAt,
+            snapshot = snapshot?.let {
+                Fix(
+                    point = nyc.curbside.asp.LatLng(it.latitude, it.longitude),
+                    accuracyMeters = it.accuracyMeters,
+                    quality = FixQuality.RECENT_CACHED,
+                    at = it.at,
+                )
+            },
+        )
         if (fix == null) {
+            CurbsideLog.w("capture failed: no usable fix and no breadcrumb to fall back on")
             // No fix and no breadcrumb. Retrying later would pin the car wherever the phone is by
             // then, which is worse than nothing, so tell the user and let them drop a pin.
             Notifications.postCaptureFailed(applicationContext)
@@ -65,6 +93,7 @@ class ParkingCaptureWorker @AssistedInject constructor(
 
         // Null means the drive was judged never to have happened — a walk that activity
         // recognition called a car trip. The previous spot, which is still the right one, stands.
+        CurbsideLog.i("capture got a ${fix.quality} fix, accurate to ${fix.accuracyMeters.toInt()}m")
         parking.recordParking(fix, endedBy, droveFor = droveFor)
         return Result.success()
     }
@@ -74,5 +103,6 @@ class ParkingCaptureWorker @AssistedInject constructor(
         const val KEY_ENDED_BY = "ended_by"
         const val KEY_DROVE_FOR_SECONDS = "drove_for_seconds"
         const val KEY_ON_FOOT = "on_foot"
+        const val KEY_ENDED_AT = "ended_at"
     }
 }

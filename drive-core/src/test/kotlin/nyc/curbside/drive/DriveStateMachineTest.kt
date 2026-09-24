@@ -109,6 +109,80 @@ class DriveStateMachineTest {
     }
 
     @Test
+    fun `the pin is dated from when the car stopped, not from when the debounce expired`() {
+        val start = driving()
+        val pending = machine.onSignal(
+            start,
+            signal(SignalSource.ANDROID_AUTO, SignalKind.DRIVE_ENDED, 600),
+        ).state
+
+        val (_, action) = machine.onTimer(pending, at(620))
+
+        // The twenty seconds between unplugging and the alarm are twenty seconds of walking away
+        // from the car. Dating the capture from the alarm is how a pin ends up on the street the
+        // user left by rather than the one the car is on.
+        val capture = assertIs<DriveAction.CapturePark>(action)
+        assertEquals(at(600), capture.at)
+        // How long the drive lasted is still measured to the moment we stopped watching.
+        assertEquals(Duration.ofSeconds(620), capture.droveFor)
+    }
+
+    @Test
+    fun `the walking short-circuit is dated from the end signal, not from the walking`() {
+        val start = driving(SignalSource.CAR_BLUETOOTH)
+        val pending = machine.onSignal(
+            start,
+            signal(SignalSource.CAR_BLUETOOTH, SignalKind.DRIVE_ENDED, 600),
+        ).state
+
+        val (_, action) = machine.onSignal(
+            pending,
+            signal(SignalSource.ACTIVITY_RECOGNITION, SignalKind.WALKING_STARTED, 630),
+        )
+
+        // Being seen walking is the strongest possible evidence that the phone is no longer with
+        // the car, so it is the worst possible moment to ask where the phone is.
+        val capture = assertIs<DriveAction.CapturePark>(action)
+        assertEquals(at(600), capture.at)
+    }
+
+    @Test
+    fun `the stop time survives the process dying under the debounce`() {
+        val start = driving()
+        val pending = machine.onSignal(
+            start,
+            signal(SignalSource.ANDROID_AUTO, SignalKind.DRIVE_ENDED, 600),
+        ).state
+
+        // What DataStore would hand back after the process was killed and the alarm woke it again.
+        val revived = DriveState(
+            phase = pending.phase,
+            driveStartedAt = pending.driveStartedAt,
+            startedBy = pending.startedBy,
+            confirmAt = pending.confirmAt,
+            endedBy = pending.endedBy,
+            endedAt = pending.endedAt,
+        )
+
+        val capture = assertIs<DriveAction.CapturePark>(machine.onTimer(revived, at(620)).action)
+        assertEquals(at(600), capture.at)
+    }
+
+    @Test
+    fun `a walk with no end signal behind it is dated from the walk itself`() {
+        val start = driving()
+
+        val (_, action) = machine.onSignal(
+            start,
+            signal(SignalSource.ACTIVITY_RECOGNITION, SignalKind.WALKING_STARTED, 900),
+        )
+
+        // Nothing better exists here: no source ever said the drive ended, so the moment the user
+        // was seen on foot is the earliest evidence the car had stopped.
+        assertEquals(at(900), assertIs<DriveAction.CapturePark>(action).at)
+    }
+
+    @Test
     fun `an alarm that fires early is ignored`() {
         val start = driving()
         val pending = machine.onSignal(

@@ -79,6 +79,44 @@ failing the build, so a fresh clone compiles and runs.
 Sharing additionally needs a Firebase project and `app/google-services.json`. Deploy
 `firestore.rules` alongside it; the default rules will not do.
 
+### Watching detection work
+
+Detection happens across separate wake-ups in a process that often did not exist a second earlier,
+so the only way to see it is the log. Everything the app has to say uses one tag:
+
+```bash
+adb logcat -s Curbside
+```
+
+A captured drive reads roughly like this:
+
+```
+I Curbside: myBuick connected
+I Curbside: CAR_BLUETOOTH DRIVE_STARTED: IDLE -> DRIVING — a drive has begun
+I Curbside: myBuick disconnected
+I Curbside: CAR_BLUETOOTH DRIVE_ENDED: DRIVING -> CONFIRMING_PARK — park check in 45s
+I Curbside: park check due: CONFIRMING_PARK -> IDLE — capturing after 734s
+I Curbside: enqueuing the parking capture
+I Curbside: capture got a FINE fix, accurate to 12m
+I Curbside: parked: FINE fix ±12m, 2 candidate curbs, must move in 1163m, car identified by STEREO
+I Curbside: day-ahead reminder armed for 23m from now
+I Curbside: final reminder armed for 1103m from now
+```
+
+A drive that produces no pin says why rather than saying nothing, which is the whole point:
+
+```
+I Curbside: CAR_BLUETOOTH DRIVE_ENDED: DRIVING -> IDLE — discarded: 80s is under the 90s minimum trip
+I Curbside: a bluetooth device connected, but it is not one of your cars — ignored
+I Curbside: parking discarded: 210m in 190s is walking pace, keeping the spot we already had
+```
+
+**No coordinate, address or curb id is ever logged.** A logcat line outlives the process and ends up
+in bug reports, and this app's whole premise is that not even its own server learns where the car
+is. Distances, accuracies, durations and counts answer the questions a detection bug asks without
+being a location. Debug builds add a little more detail at `D`, including the Bluetooth address of a
+device that was ignored — which is usually the answer when a real car goes unnoticed.
+
 ### Building the curb dataset
 
 ```bash

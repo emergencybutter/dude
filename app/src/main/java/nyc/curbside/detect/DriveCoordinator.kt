@@ -11,13 +11,16 @@ import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.time.Duration
 import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
+import nyc.curbside.CurbsideLog
 import nyc.curbside.data.Breadcrumb
 import nyc.curbside.data.CurbsideSettings
 import nyc.curbside.drive.DriveAction
 import nyc.curbside.drive.DriveSignal
+import nyc.curbside.drive.DriveState
 import nyc.curbside.drive.DriveStateMachine
 import nyc.curbside.location.Fix
 import nyc.curbside.location.LocationFixer
@@ -46,6 +49,12 @@ class DriveCoordinator @Inject constructor(
         val before = settings.readDriveState()
         val (after, action) = machine.onSignal(before, signal)
         settings.writeDriveState(after)
+        // The one line worth having above all others: what came in, what the machine made of it,
+        // and what it decided. Every missed parking is a question about this line.
+        CurbsideLog.i(
+            "${signal.source} ${signal.kind}: ${before.phase} -> ${after.phase} — " +
+                describe(action, before, signal.at),
+        )
         apply(action)
     }
 
@@ -54,6 +63,7 @@ class DriveCoordinator @Inject constructor(
         val before = settings.readDriveState()
         val (after, action) = machine.onTimer(before, now)
         settings.writeDriveState(after)
+        CurbsideLog.i("park check due: ${before.phase} -> ${after.phase} — ${describe(action, before, now)}")
         apply(action)
     }
 
@@ -67,6 +77,7 @@ class DriveCoordinator @Inject constructor(
         val (afterTimer, timerAction) = machine.onTimer(state, now)
         if (timerAction != DriveAction.None) {
             settings.writeDriveState(afterTimer)
+            CurbsideLog.i("reconcile picked up a dropped park check — ${describe(timerAction, state, now)}")
             apply(timerAction)
             return
         }
@@ -74,7 +85,33 @@ class DriveCoordinator @Inject constructor(
         val (afterStale, staleAction) = machine.onStaleCheck(state, now)
         if (staleAction != DriveAction.None) {
             settings.writeDriveState(afterStale)
+            CurbsideLog.i("reconcile — ${describe(staleAction, state, now)}")
             apply(staleAction)
+        }
+    }
+
+    /**
+     * Says what an action means in the terms the reader cares about, and above all *why* a trip was
+     * thrown away — the discard is the decision that looks like the app being broken when it is not.
+     */
+    private fun describe(action: DriveAction, before: DriveState, at: Instant): String {
+        val drove = before.driveStartedAt?.let { Duration.between(it, at) }
+        return when (action) {
+            DriveAction.None -> "nothing to do"
+            DriveAction.BeginDrive -> "a drive has begun"
+            is DriveAction.ScheduleParkCheck ->
+                "park check in ${Duration.between(at, action.at).seconds}s"
+            DriveAction.CancelParkCheck -> "the drive resumed, park check cancelled"
+            is DriveAction.CapturePark ->
+                "capturing after ${action.droveFor.seconds}s" +
+                    if (action.confirmedOnFoot) ", confirmed on foot" else ""
+
+            DriveAction.DiscardShortTrip ->
+                if (drove != null && drove < machine.minimumTrip) {
+                    "discarded: ${drove.seconds}s is under the ${machine.minimumTrip.seconds}s minimum trip"
+                } else {
+                    "discarded: a drive that never ended, abandoned after ${drove?.toHours()}h"
+                }
         }
     }
 
@@ -84,25 +121,46 @@ class DriveCoordinator @Inject constructor(
 
             DriveAction.BeginDrive -> {
                 breadcrumb.start()
+                // Nothing held from a previous stop may survive into this drive.
+                settings.clearParkSnapshot()
                 // Where the drive started is how the app tells two cars apart when no stereo did:
                 // the car you are pulling away in was parked here a moment ago. It costs nothing —
                 // this is the position the phone already had, not a fix taken to answer it.
                 settings.setDriveOrigin(fixer.lastKnown()?.let(::originOf))
             }
 
-            is DriveAction.ScheduleParkCheck -> scheduleParkCheck(action.at)
+            is DriveAction.ScheduleParkCheck -> {
+                scheduleParkCheck(action.at)
+                // Take the position now, while the car is still where it was left. The debounce
+                // that follows is there to decide whether this was really a park; it is not
+                // supposed to have an opinion about where, and before this it did — by the time
+                // it expired the user had walked a street's length and the fix followed them.
+                val snapshot = fixer.snapshot()?.let(::originOf)
+                if (snapshot != null) {
+                    settings.writeParkSnapshot(snapshot)
+                    CurbsideLog.d("held a ±${snapshot.accuracyMeters.toInt()}m position for the park check")
+                } else {
+                    settings.clearParkSnapshot()
+                    CurbsideLog.d("no cached position to hold; the capture will take its own")
+                }
+            }
 
-            DriveAction.CancelParkCheck -> cancelParkCheck()
+            DriveAction.CancelParkCheck -> {
+                cancelParkCheck()
+                settings.clearParkSnapshot()
+            }
 
             DriveAction.DiscardShortTrip -> {
                 cancelParkCheck()
                 breadcrumb.stop()
+                settings.clearParkSnapshot()
                 forgetDrive()
             }
 
             is DriveAction.CapturePark -> {
                 cancelParkCheck()
                 breadcrumb.stop()
+                CurbsideLog.i("enqueuing the parking capture")
                 enqueueCapture(action)
             }
         }
@@ -125,6 +183,7 @@ class DriveCoordinator @Inject constructor(
                     ParkingCaptureWorker.KEY_ENDED_BY to action.endedBy.name,
                     ParkingCaptureWorker.KEY_DROVE_FOR_SECONDS to action.droveFor.seconds,
                     ParkingCaptureWorker.KEY_ON_FOOT to action.confirmedOnFoot,
+                    ParkingCaptureWorker.KEY_ENDED_AT to action.at.toEpochMilli(),
                 ),
             )
             .build()

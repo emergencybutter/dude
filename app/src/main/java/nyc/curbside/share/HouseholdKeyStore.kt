@@ -69,12 +69,20 @@ class HouseholdKeyStore @Inject constructor(
         cached = null
     }
 
-    /** Base64 of the raw household key, for the pairing QR code. */
-    fun exportForPairing(): String? = key()?.let { Base64.encodeToString(it, Base64.NO_WRAP) }
+    /**
+     * Base64 of the raw household key, for the pairing QR code.
+     *
+     * URL-safe, because the key travels as a query parameter of a `curbside://pair` URI and the
+     * standard alphabet's `+` comes back out of the other phone's URI parser as a space.
+     */
+    fun exportForPairing(): String? =
+        key()?.let { Base64.encodeToString(it, Base64.NO_WRAP or Base64.URL_SAFE or Base64.NO_PADDING) }
 
     fun importFromPairing(encoded: String): Boolean = runCatching {
-        val decoded = Base64.decode(encoded, Base64.NO_WRAP)
-        require(decoded.size == 32) { "household key must be 256 bits" }
+        // Accept either alphabet: the URL-safe one this app emits, and the standard one, so a code
+        // from an older build still pairs.
+        val decoded = Base64.decode(encoded.replace('-', '+').replace('_', '/'), Base64.NO_WRAP)
+        require(decoded.size == KEY_BYTES) { "household key must be 256 bits" }
         store(decoded)
         true
     }.getOrDefault(false)
@@ -100,6 +108,7 @@ class HouseholdKeyStore @Inject constructor(
     }
 
     private companion object {
+        const val KEY_BYTES = 32
         const val PREFS = "household_key"
         const val KEY_WRAPPED = "wrapped"
         const val KEY_NONCE = "nonce"

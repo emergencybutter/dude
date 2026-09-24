@@ -1,6 +1,7 @@
 package nyc.curbside.detect
 
 import androidx.car.app.connection.CarConnection
+import androidx.lifecycle.LiveData
 import androidx.lifecycle.Observer
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.time.Instant
@@ -10,6 +11,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import nyc.curbside.CurbsideLog
+import nyc.curbside.di.ApplicationScope
 import nyc.curbside.drive.DriveSignal
 import nyc.curbside.drive.SignalKind
 import nyc.curbside.drive.SignalSource
@@ -24,10 +27,14 @@ import nyc.curbside.drive.SignalSource
  *
  * The catch, and the reason this cannot be the only signal: [CarConnection] is a LiveData backed by
  * a content provider and a context-registered receiver, so it only reports while our process is
- * alive. It cannot wake a killed app. So it is wired up as a *refinement* — whenever the app
- * happens to be running (which, if the user has our app on the head unit or has just used it, is
- * most of the drive) it produces a sharper edge than activity recognition would, and when the app
- * is not running the other two signals carry the load.
+ * alive. It cannot wake a killed app. So it is wired up as a *refinement* — whenever the process is
+ * up, it produces a sharper edge than activity recognition would, and when the process is gone the
+ * other two signals carry the load.
+ *
+ * "While the process is alive" is deliberately not "while the user has the app open". This used to
+ * be tied to the activity, which made it worthless in the case it exists for: nobody is looking at
+ * the screen while they plug the phone into the dashboard. Bluetooth or a transition wakes the
+ * process, and from then on the projection edge is there to be had.
  *
  * @see DetectionRegistrar for the always-on half.
  */
@@ -35,16 +42,24 @@ import nyc.curbside.drive.SignalSource
 class CarConnectionMonitor @Inject constructor(
     @param:ApplicationContext private val context: android.content.Context,
     private val coordinator: DriveCoordinator,
+    private val settings: nyc.curbside.data.CurbsideSettings,
+    @param:ApplicationScope private val scope: CoroutineScope,
 ) {
 
     private var observer: Observer<Int>? = null
-    private var lastType: Int? = null
 
     /**
-     * Starts observing. Must be called on the main thread; [CarConnection]'s LiveData has no
-     * background observation path.
+     * The exact LiveData the observer was attached to.
+     *
+     * `CarConnection(context)` builds a new object every call, each with its own LiveData, so
+     * removing an observer from a freshly constructed one removes it from something it was never
+     * on. Holding the instance is the only way [stop] can undo what [start] did.
      */
-    fun start(scope: CoroutineScope) {
+    private var connection: LiveData<Int>? = null
+    private var lastType: Int? = null
+
+    /** Starts observing. Idempotent, and safe to call from any thread. */
+    fun start() {
         if (observer != null) return
 
         val liveData = CarConnection(context).type
@@ -53,33 +68,52 @@ class CarConnectionMonitor @Inject constructor(
             lastType = type
             if (previous == type) return@Observer
 
+            // Recorded off to one side of the edge logic below, and deliberately not gated on it.
+            // Whether this reading is an edge we act on is a question about *this drive*; whether a
+            // head unit exists at all is a question about the phone, and the settings screen asks
+            // the second one. Arriving already plugged in answers it just as well as plugging in.
+            if (isConnected(type)) scope.launch { settings.setAndroidAutoSeen() }
+
             val kind = when {
                 // The first value is the state of the world as we find it, not an edge. Swallowing
-                // it wholesale meant that opening the app with the head unit already plugged in
-                // said nothing at all — and since this observer only lives as long as the activity,
-                // "already plugged in" is the normal way for it to start. If a car is connected the
+                // it wholesale meant that starting up with the head unit already plugged in said
+                // nothing at all — and since this observer starts whenever the process does,
+                // "already plugged in" is a normal way for it to start. If a car is connected the
                 // moment we begin watching, a drive is under way; the state machine ignores a start
                 // it already knows about, so saying so costs nothing when it is not news.
                 previous == null -> if (isConnected(type)) SignalKind.DRIVE_STARTED else null
                 isConnected(type) && !isConnected(previous) -> SignalKind.DRIVE_STARTED
                 !isConnected(type) && isConnected(previous) -> SignalKind.DRIVE_ENDED
                 else -> null
-            } ?: return@Observer
+            } ?: run {
+                CurbsideLog.d("android auto reported connection type $type, not an edge we act on")
+                return@Observer
+            }
 
+            CurbsideLog.i("android auto ${if (kind == SignalKind.DRIVE_STARTED) "connected" else "disconnected"}")
+
+            // The application scope, never a caller's. An earlier version dispatched on the
+            // activity's lifecycleScope, which is cancelled at onDestroy — after the first rotation
+            // or fold the observer went on receiving edges and silently dropped every one of them.
             scope.launch {
                 coordinator.onSignal(DriveSignal(SignalSource.ANDROID_AUTO, kind, Instant.now()))
             }
         }
 
         observer = newObserver
+        connection = liveData
+        // observeForever has to happen on the main thread; CarConnection's LiveData has no
+        // background observation path.
         scope.launch(Dispatchers.Main) { liveData.observeForever(newObserver) }
     }
 
     suspend fun stop() {
         val current = observer ?: return
+        val liveData = connection
         observer = null
+        connection = null
         lastType = null
-        withContext(Dispatchers.Main) { CarConnection(context).type.removeObserver(current) }
+        withContext(Dispatchers.Main) { liveData?.removeObserver(current) }
     }
 
     /**

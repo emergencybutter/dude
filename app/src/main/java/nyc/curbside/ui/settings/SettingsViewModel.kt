@@ -38,6 +38,10 @@ data class SettingsUiState(
     val suspensionSummary: String = "Suspension calendar not loaded yet.",
     /** Set when the user asks for a pairing code; the screen renders it as a QR. */
     val pendingInvite: PairingInvite? = null,
+    /** True while the camera dialog is up. */
+    val scanning: Boolean = false,
+    /** Why the last pairing attempt got nowhere, for the sharing card to say so. */
+    val pairingError: String? = null,
     val busy: Boolean = false,
 )
 
@@ -98,6 +102,7 @@ class SettingsViewModel @Inject constructor(
 
         local.value = local.value.copy(
             transitionsRegistered = settings.readTransitionsRegistered(),
+            androidAutoSeen = settings.readAndroidAutoSeen(),
             segmentCount = curbDao.count(),
             suspensionSummary = summary,
         )
@@ -107,34 +112,69 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { settings.setAutoShare(enabled) }
     }
 
-    fun onCreateHousehold() {
-        viewModelScope.launch {
-            local.value = local.value.copy(busy = true)
-            val invite = household.createHousehold(DEFAULT_MEMBER_NAME)
-            local.value = local.value.copy(pendingInvite = invite, busy = false)
-        }
-    }
-
     /**
-     * Hook for the QR scanner. Left as a call into [HouseholdRepository.join] so the camera
-     * plumbing lives in the screen where the permission is requested.
+     * Produces the code the other phone scans.
+     *
+     * An invite into the household this device already belongs to, or a brand new household on the
+     * first phone. Never a second household: [HouseholdRepository.createHousehold] mints a fresh
+     * key, and doing that while one is in use would strand every spot already shared.
      */
-    fun onPairingScanned(raw: String) {
-        val invite = PairingInvite.parse(raw) ?: return
+    fun onShowPairingCode() {
         viewModelScope.launch {
-            local.value = local.value.copy(busy = true)
-            household.join(invite, DEFAULT_MEMBER_NAME)
-            local.value = local.value.copy(busy = false)
+            local.value = local.value.copy(busy = true, pairingError = null)
+            val invite = if (settings.readHouseholdId() == null) {
+                household.createHousehold(DEFAULT_MEMBER_NAME)
+            } else {
+                household.invite()
+            }
+            local.value = local.value.copy(
+                pendingInvite = invite,
+                pairingError = if (invite == null) NO_INVITE else null,
+                busy = false,
+            )
         }
     }
 
-    fun onScanPairing() {
-        // The screen launches the scanner; this exists so the button has somewhere to report to.
+    fun onDismissPairingCode() {
         local.value = local.value.copy(pendingInvite = null)
     }
 
+    fun onScanPairing() {
+        local.value = local.value.copy(scanning = true, pendingInvite = null, pairingError = null)
+    }
+
+    fun onScannerDismissed() {
+        local.value = local.value.copy(scanning = false)
+    }
+
+    /**
+     * Redeems a scanned code.
+     *
+     * The camera plumbing lives in the screen, where the permission is requested; this takes the
+     * raw payload so the failures — somebody else's QR, an invite already used or expired — are
+     * told apart here and reported in one place.
+     */
+    fun onPairingScanned(raw: String) {
+        val invite = PairingInvite.parse(raw)
+        if (invite == null) {
+            local.value = local.value.copy(scanning = false, pairingError = NOT_A_PAIRING_CODE)
+            return
+        }
+        viewModelScope.launch {
+            local.value = local.value.copy(scanning = false, busy = true, pairingError = null)
+            val joined = household.join(invite, DEFAULT_MEMBER_NAME)
+            local.value = local.value.copy(
+                busy = false,
+                pairingError = if (joined) null else COULD_NOT_JOIN,
+            )
+        }
+    }
+
     fun onLeaveHousehold() {
-        viewModelScope.launch { household.leave() }
+        viewModelScope.launch {
+            household.leave()
+            local.value = local.value.copy(pendingInvite = null, pairingError = null)
+        }
     }
 
     /**
@@ -170,5 +210,14 @@ class SettingsViewModel @Inject constructor(
         const val STOP_TIMEOUT_MILLIS = 5_000L
         const val DEFAULT_MEMBER_NAME = "Me"
         val DAY: DateTimeFormatter = DateTimeFormatter.ofPattern("d MMM")
+
+        const val NO_INVITE =
+            "Could not reach the server to make a code. Check your connection and try again."
+        const val NOT_A_PAIRING_CODE =
+            "That is not a Curbside pairing code. Scan the square the other phone is showing " +
+                "under Settings › Sharing."
+        const val COULD_NOT_JOIN =
+            "That code did not work. They expire after fifteen minutes and only work once — " +
+                "ask the other phone for a fresh one."
     }
 }

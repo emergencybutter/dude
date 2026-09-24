@@ -130,6 +130,12 @@ dependencies {
     // Map.
     implementation(libs.maplibre)
 
+    implementation(libs.zxing.core)
+    implementation(libs.camera.core)
+    implementation(libs.camera.camera2)
+    implementation(libs.camera.lifecycle)
+    implementation(libs.camera.view)
+
     implementation(libs.okhttp)
     implementation(libs.retrofit)
     implementation(libs.retrofit.serialization)

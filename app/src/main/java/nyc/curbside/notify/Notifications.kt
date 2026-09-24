@@ -22,6 +22,7 @@ object Notifications {
 
     const val CHANNEL_PARKED = "parked"
     const val CHANNEL_MOVE = "move"
+    const val CHANNEL_MOVE_AHEAD = "move_ahead"
     const val CHANNEL_SHARED = "shared"
     const val CHANNEL_CAPTURE = "capture"
 
@@ -30,6 +31,7 @@ object Notifications {
     const val MOVE_NOTIFICATION_ID = 3
     const val SHARED_NOTIFICATION_ID = 4
     const val MOVED_NOTIFICATION_ID = 6
+    const val MOVE_AHEAD_NOTIFICATION_ID = 7
     const val FAILED_NOTIFICATION_ID = 5
 
     private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("h:mm a")
@@ -43,6 +45,11 @@ object Notifications {
                 channel(context, CHANNEL_PARKED, R.string.channel_parked, NotificationManager.IMPORTANCE_LOW),
                 // The one channel allowed to interrupt. Missing it costs sixty-five dollars.
                 channel(context, CHANNEL_MOVE, R.string.channel_move, NotificationManager.IMPORTANCE_HIGH),
+                // A day's warning is information, not an alarm, and it gets its own channel so it
+                // can be silenced on its own. Sharing the interrupting channel would mean anyone
+                // who tires of the day-ahead notice turns off the one that saves them sixty-five
+                // dollars along with it.
+                channel(context, CHANNEL_MOVE_AHEAD, R.string.channel_move_ahead, NotificationManager.IMPORTANCE_DEFAULT),
                 channel(context, CHANNEL_SHARED, R.string.channel_shared, NotificationManager.IMPORTANCE_DEFAULT),
                 // The transient "finding your car" notice the capture worker is required to show.
                 channel(context, CHANNEL_CAPTURE, R.string.channel_capture, NotificationManager.IMPORTANCE_MIN),
@@ -102,6 +109,10 @@ object Notifications {
         val local = moveBy.atZone(NYC)
         val minutes = Duration.between(Instant.now(), moveBy).toMinutes().coerceAtLeast(0)
 
+        // Yesterday's notice about this same curb is now the stale half of a pair. Take it down
+        // rather than leave two notifications about one car disagreeing about how long is left.
+        runCatching { NotificationManagerCompat.from(context).cancel(MOVE_AHEAD_NOTIFICATION_ID) }
+
         notify(
             context,
             MOVE_NOTIFICATION_ID,
@@ -117,6 +128,39 @@ object Notifications {
                 )
                 .setCategory(NotificationCompat.CATEGORY_REMINDER)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setContentIntent(openApp(context))
+                .addAction(
+                    R.drawable.ic_pin,
+                    context.getString(R.string.action_walk_to_car),
+                    navigateTo(context, event),
+                )
+                .setAutoCancel(true)
+                .build(),
+        )
+    }
+
+    /**
+     * A day's notice, for the household member who can still do something unhurried about it.
+     *
+     * Quieter than [postMoveReminder] by design: at this range nobody has to stand up. It names the
+     * day and time rather than a countdown, because "in 1,440 minutes" is not a thing anyone reads.
+     */
+    fun postDayAheadReminder(context: Context, event: ParkingEventEntity, moveBy: Instant) {
+        val local = moveBy.atZone(NYC)
+
+        notify(
+            context,
+            MOVE_AHEAD_NOTIFICATION_ID,
+            NotificationCompat.Builder(context, CHANNEL_MOVE_AHEAD)
+                .setSmallIcon(R.drawable.ic_pin)
+                .setContentTitle(context.getString(R.string.notification_move_ahead_title, DAY_AND_TIME.format(local)))
+                .setContentText(
+                    context.getString(
+                        R.string.notification_move_ahead_text,
+                        event.address ?: context.getString(R.string.notification_parked_fallback),
+                    ),
+                )
+                .setCategory(NotificationCompat.CATEGORY_REMINDER)
                 .setContentIntent(openApp(context))
                 .addAction(
                     R.drawable.ic_pin,
