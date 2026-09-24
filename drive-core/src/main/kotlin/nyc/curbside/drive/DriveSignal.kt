@@ -32,6 +32,14 @@ enum class SignalSource {
 
     /** The user pressed a button. Always believed immediately. */
     MANUAL,
+    ;
+
+    /**
+     * A physical connection to the car, as against an inference about motion. While one is up the
+     * car is on and the phone is in it, whatever the accelerometer makes of the traffic.
+     */
+    val isCarLink: Boolean
+        get() = this == ANDROID_AUTO || this == CAR_BLUETOOTH
 }
 
 enum class SignalKind {
@@ -56,14 +64,16 @@ data class DriveSignal(
     /**
      * How long to wait before believing a [SignalKind.DRIVE_ENDED] from this source.
      *
-     * Activity recognition has already done this work internally. Unplugging from Android Auto is
-     * nearly always real, but people do reseat a cable. Bluetooth drops out at random and gets the
-     * most patience — the cost of waiting is a slightly later notification, while the cost of not
-     * waiting is a parking pin dropped at a traffic light.
+     * Unplugging from Android Auto is nearly always real, but people do reseat a cable. Bluetooth
+     * drops out at random. Activity recognition gets the most patience of all: it leaves
+     * `IN_VEHICLE` in any jam long enough to look like standing still, and believing it on the spot
+     * dropped pins in the middle of the avenue. Walking away confirms a real stop at once, so the
+     * wait only costs anything when the user stays in the car — and the position is held from the
+     * signal, not the alarm, so it never moves the pin.
      */
     val endDebounce: Duration
         get() = when (source) {
-            SignalSource.ACTIVITY_RECOGNITION -> Duration.ZERO
+            SignalSource.ACTIVITY_RECOGNITION -> Duration.ofMinutes(3)
             SignalSource.MANUAL -> Duration.ZERO
             SignalSource.ANDROID_AUTO -> Duration.ofSeconds(20)
             SignalSource.CAR_BLUETOOTH -> Duration.ofSeconds(45)

@@ -170,7 +170,7 @@ class DriveStateMachineTest {
 
     @Test
     fun `a walk with no end signal behind it is dated from the walk itself`() {
-        val start = driving()
+        val start = driving(SignalSource.ACTIVITY_RECOGNITION)
 
         val (_, action) = machine.onSignal(
             start,
@@ -218,7 +218,7 @@ class DriveStateMachineTest {
 
     @Test
     fun `walking during a drive we never saw end still parks the car`() {
-        val start = driving()
+        val start = driving(SignalSource.ACTIVITY_RECOGNITION)
         val (_, action) = machine.onSignal(
             start,
             signal(SignalSource.ACTIVITY_RECOGNITION, SignalKind.WALKING_STARTED, 900),
@@ -228,15 +228,154 @@ class DriveStateMachineTest {
     }
 
     @Test
-    fun `an activity transition needs no debounce because the detector already applied one`() {
+    fun `leaving IN_VEHICLE is waited out, because a traffic jam looks like standing still`() {
         val start = driving(SignalSource.ACTIVITY_RECOGNITION)
         val (state, action) = machine.onSignal(
             start,
             signal(SignalSource.ACTIVITY_RECOGNITION, SignalKind.DRIVE_ENDED, 600),
         )
 
-        assertIs<DriveAction.CapturePark>(action)
-        assertEquals(DrivePhase.IDLE, state.phase)
+        assertEquals(at(780), assertIs<DriveAction.ScheduleParkCheck>(action).at)
+        assertEquals(DrivePhase.CONFIRMING_PARK, state.phase)
+    }
+
+    @Test
+    fun `moving off again after a jam cancels the park check`() {
+        val start = driving(SignalSource.ACTIVITY_RECOGNITION)
+        val stalled = machine.onSignal(
+            start,
+            signal(SignalSource.ACTIVITY_RECOGNITION, SignalKind.DRIVE_ENDED, 600),
+        ).state
+
+        val (state, action) = machine.onSignal(
+            stalled,
+            signal(SignalSource.ACTIVITY_RECOGNITION, SignalKind.DRIVE_STARTED, 700),
+        )
+
+        assertEquals(DriveAction.CancelParkCheck, action)
+        assertEquals(DrivePhase.DRIVING, state.phase)
+        assertNull(state.endedAt)
+    }
+
+    @Test
+    fun `walking after leaving IN_VEHICLE parks at once, dated from the stop`() {
+        val start = driving(SignalSource.ACTIVITY_RECOGNITION)
+        val stopped = machine.onSignal(
+            start,
+            signal(SignalSource.ACTIVITY_RECOGNITION, SignalKind.DRIVE_ENDED, 600),
+        ).state
+
+        val (_, action) = machine.onSignal(
+            stopped,
+            signal(SignalSource.ACTIVITY_RECOGNITION, SignalKind.WALKING_STARTED, 640),
+        )
+
+        assertEquals(at(600), assertIs<DriveAction.CapturePark>(action).at)
+    }
+
+    @Test
+    fun `activity recognition cannot end a drive while the stereo is connected`() {
+        val start = driving(SignalSource.CAR_BLUETOOTH)
+        val (state, action) = machine.onSignal(
+            start,
+            signal(SignalSource.ACTIVITY_RECOGNITION, SignalKind.DRIVE_ENDED, 600),
+        )
+
+        assertIs<DriveAction.Ignore>(action)
+        assertEquals(DrivePhase.DRIVING, state.phase)
+    }
+
+    @Test
+    fun `walking is not believed while android auto is plugged in`() {
+        val start = driving(SignalSource.ANDROID_AUTO)
+        val (state, action) = machine.onSignal(
+            start,
+            signal(SignalSource.ACTIVITY_RECOGNITION, SignalKind.WALKING_STARTED, 900),
+        )
+
+        assertIs<DriveAction.Ignore>(action)
+        assertEquals(DrivePhase.DRIVING, state.phase)
+    }
+
+    @Test
+    fun `unplugging android auto while the stereo holds does not end the drive`() {
+        val start = driving(SignalSource.ANDROID_AUTO)
+        val both = machine.onSignal(start, signal(SignalSource.CAR_BLUETOOTH, SignalKind.DRIVE_STARTED, 5)).state
+
+        val (state, action) = machine.onSignal(
+            both,
+            signal(SignalSource.ANDROID_AUTO, SignalKind.DRIVE_ENDED, 600),
+        )
+
+        assertIs<DriveAction.Ignore>(action)
+        assertEquals(setOf(SignalSource.CAR_BLUETOOTH), state.carLinks.keys)
+
+        // The stereo going is then the real end.
+        val (_, end) = machine.onSignal(state, signal(SignalSource.CAR_BLUETOOTH, SignalKind.DRIVE_ENDED, 700))
+        assertIs<DriveAction.ScheduleParkCheck>(end)
+    }
+
+    @Test
+    fun `the walk to the car, delivered late, does not throw the drive away`() {
+        // Started by motion, so no car link is up to overrule anything: only the dates can.
+        val restarted = machine.onSignal(
+            DriveState(),
+            signal(SignalSource.ACTIVITY_RECOGNITION, SignalKind.DRIVE_STARTED, 100),
+        ).state
+
+        val (state, action) = machine.onSignal(
+            restarted,
+            signal(SignalSource.ACTIVITY_RECOGNITION, SignalKind.WALKING_STARTED, 40),
+        )
+
+        assertIs<DriveAction.Ignore>(action)
+        assertEquals(DrivePhase.DRIVING, state.phase)
+    }
+
+    @Test
+    fun `a connected stereo is remembered across a discarded trip`() {
+        val start = driving(SignalSource.CAR_BLUETOOTH)
+        val discarded = machine.onSignal(start, signal(SignalSource.MANUAL, SignalKind.DRIVE_ENDED, 30))
+        assertEquals(DriveAction.DiscardShortTrip, discarded.action)
+        assertEquals(setOf(SignalSource.CAR_BLUETOOTH), discarded.state.carLinks.keys)
+
+        // The drive that follows is picked up by motion, but the stereo still vouches for the car.
+        val next = machine.onSignal(
+            discarded.state,
+            signal(SignalSource.ACTIVITY_RECOGNITION, SignalKind.DRIVE_STARTED, 120),
+        ).state
+        val (state, action) = machine.onSignal(
+            next,
+            signal(SignalSource.ACTIVITY_RECOGNITION, SignalKind.DRIVE_ENDED, 900),
+        )
+
+        assertIs<DriveAction.Ignore>(action)
+        assertEquals(DrivePhase.DRIVING, state.phase)
+    }
+
+    @Test
+    fun `a head unit found unplugged stops vouching for the car`() {
+        val start = driving(SignalSource.ANDROID_AUTO)
+        val (absent, action) = machine.onLinkAbsent(start, SignalSource.ANDROID_AUTO)
+
+        assertIs<DriveAction.Ignore>(action)
+        assertTrue(absent.carLinks.isEmpty())
+        assertEquals(DrivePhase.DRIVING, absent.phase)
+
+        val (_, walked) = machine.onSignal(
+            absent,
+            signal(SignalSource.ACTIVITY_RECOGNITION, SignalKind.WALKING_STARTED, 900),
+        )
+        assertIs<DriveAction.CapturePark>(walked)
+    }
+
+    @Test
+    fun `a link connected longer than any drive is let go`() {
+        val linked = DriveState(carLinks = mapOf(SignalSource.CAR_BLUETOOTH to t0))
+        val (state, action) = machine.onStaleCheck(linked, at(13 * 3600))
+
+        assertIs<DriveAction.Ignore>(action)
+        assertTrue(state.carLinks.isEmpty())
     }
 
     @Test

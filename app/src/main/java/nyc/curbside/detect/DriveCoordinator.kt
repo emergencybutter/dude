@@ -22,6 +22,7 @@ import nyc.curbside.drive.DriveAction
 import nyc.curbside.drive.DriveSignal
 import nyc.curbside.drive.DriveState
 import nyc.curbside.drive.DriveStateMachine
+import nyc.curbside.drive.SignalSource
 import nyc.curbside.location.Fix
 import nyc.curbside.location.LocationFixer
 import nyc.curbside.location.PassiveBreadcrumb
@@ -55,7 +56,20 @@ class DriveCoordinator @Inject constructor(
             "${signal.source} ${signal.kind}: ${before.phase} -> ${after.phase} — " +
                 describe(action, before, signal.at),
         )
-        apply(action)
+        apply(action, after)
+    }
+
+    /**
+     * A car link found disconnected with no edge to say when — see [DriveStateMachine.onLinkAbsent].
+     * Called by [CarConnectionMonitor] when the first thing it hears on starting up is "not
+     * connected", which is the only way the app learns of a disconnect it slept through.
+     */
+    suspend fun onLinkAbsent(source: SignalSource) {
+        val before = settings.readDriveState()
+        val (after, action) = machine.onLinkAbsent(before, source)
+        if (action == DriveAction.None) return
+        settings.writeDriveState(after)
+        CurbsideLog.i("$source absent: ${describe(action, before, Instant.now())}")
     }
 
     /** Called by [ParkCheckAlarmReceiver] when the debounce elapses. */
@@ -64,7 +78,7 @@ class DriveCoordinator @Inject constructor(
         val (after, action) = machine.onTimer(before, now)
         settings.writeDriveState(after)
         CurbsideLog.i("park check due: ${before.phase} -> ${after.phase} — ${describe(action, before, now)}")
-        apply(action)
+        apply(action, after)
     }
 
     /**
@@ -78,7 +92,7 @@ class DriveCoordinator @Inject constructor(
         if (timerAction != DriveAction.None) {
             settings.writeDriveState(afterTimer)
             CurbsideLog.i("reconcile picked up a dropped park check — ${describe(timerAction, state, now)}")
-            apply(timerAction)
+            apply(timerAction, afterTimer)
             return
         }
 
@@ -86,7 +100,7 @@ class DriveCoordinator @Inject constructor(
         if (staleAction != DriveAction.None) {
             settings.writeDriveState(afterStale)
             CurbsideLog.i("reconcile — ${describe(staleAction, state, now)}")
-            apply(staleAction)
+            apply(staleAction, afterStale)
         }
     }
 
@@ -98,6 +112,7 @@ class DriveCoordinator @Inject constructor(
         val drove = before.driveStartedAt?.let { Duration.between(it, at) }
         return when (action) {
             DriveAction.None -> "nothing to do"
+            is DriveAction.Ignore -> "ignored: ${action.reason}"
             DriveAction.BeginDrive -> "a drive has begun"
             is DriveAction.ScheduleParkCheck ->
                 "park check in ${Duration.between(at, action.at).seconds}s"
@@ -115,9 +130,9 @@ class DriveCoordinator @Inject constructor(
         }
     }
 
-    private suspend fun apply(action: DriveAction) {
+    private suspend fun apply(action: DriveAction, after: DriveState) {
         when (action) {
-            DriveAction.None -> Unit
+            DriveAction.None, is DriveAction.Ignore -> Unit
 
             DriveAction.BeginDrive -> {
                 breadcrumb.start()
@@ -154,7 +169,7 @@ class DriveCoordinator @Inject constructor(
                 cancelParkCheck()
                 breadcrumb.stop()
                 settings.clearParkSnapshot()
-                forgetDrive()
+                forgetDrive(stereoStillConnected = SignalSource.CAR_BLUETOOTH in after.carLinks)
             }
 
             is DriveAction.CapturePark -> {
@@ -223,9 +238,14 @@ class DriveCoordinator @Inject constructor(
      *
      * Not called on the capture path: the worker runs after this and needs both the stereo and the
      * origin to name the car. It clears them itself once it has.
+     *
+     * The stereo is kept while it is still connected. A discard does not disconnect anything, and
+     * no second connect edge is coming to put the address back: clearing it here left the drive
+     * that followed with no stereo to name its car by, and the user was asked which car they had
+     * been driving when the app had been listening to its radio the whole way.
      */
-    private suspend fun forgetDrive() {
-        settings.setDriveStereo(null)
+    private suspend fun forgetDrive(stereoStillConnected: Boolean) {
+        if (!stereoStillConnected) settings.setDriveStereo(null)
         settings.setDriveOrigin(null)
     }
 

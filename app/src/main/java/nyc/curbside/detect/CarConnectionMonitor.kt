@@ -81,7 +81,12 @@ class CarConnectionMonitor @Inject constructor(
                 // "already plugged in" is a normal way for it to start. If a car is connected the
                 // moment we begin watching, a drive is under way; the state machine ignores a start
                 // it already knows about, so saying so costs nothing when it is not news.
-                previous == null -> if (isConnected(type)) SignalKind.DRIVE_STARTED else null
+                previous == null -> if (isConnected(type)) SignalKind.DRIVE_STARTED else null.also {
+                    // Not an edge, but not nothing either: if the machine still believes the head
+                    // unit is connected, the unplug happened while the process was dead. Left alone,
+                    // that belief would overrule every end signal until the stale check cleared it.
+                    scope.launch { coordinator.onLinkAbsent(SignalSource.ANDROID_AUTO) }
+                }
                 isConnected(type) && !isConnected(previous) -> SignalKind.DRIVE_STARTED
                 !isConnected(type) && isConnected(previous) -> SignalKind.DRIVE_ENDED
                 else -> null

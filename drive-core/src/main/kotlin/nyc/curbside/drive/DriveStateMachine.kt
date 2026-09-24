@@ -34,12 +34,27 @@ data class DriveState(
      * signal arrived, not the moment the alarm got round to firing.
      */
     val endedAt: Instant? = null,
+    /**
+     * The car links — stereo, head unit — that are connected right now, and since when.
+     *
+     * Not part of any one drive, so it survives every reset back to [DrivePhase.IDLE]: a stereo
+     * that connected before a short trip was discarded is still connected afterwards, and forgetting
+     * that is how a drive came to be judged by activity recognition alone while the car was plainly
+     * on. As long as a link is up, the car is running and nothing on foot is believed.
+     */
+    val carLinks: Map<SignalSource, Instant> = emptyMap(),
 )
 
 /** What the Android layer should do about a state change. */
 sealed interface DriveAction {
     /** Nothing to do; the signal was redundant or arrived in a phase that does not care. */
     data object None : DriveAction
+
+    /**
+     * Nothing to do, for a reason worth logging: a signal that would have ended the drive was
+     * overruled. These are the decisions that explain a parking that did *not* happen.
+     */
+    data class Ignore(val reason: String) : DriveAction
 
     /**
      * A drive has started. Subscribe the passive location listener so a breadcrumb exists even if
@@ -95,16 +110,36 @@ class DriveStateMachine(
     val minimumTrip: Duration = Duration.ofSeconds(90),
     /**
      * If we somehow never see the end of a drive, give up rather than believing the car is in
-     * motion forever and holding a passive location subscription open.
+     * motion forever and holding a passive location subscription open. Also how long a car link is
+     * believed without news, in case its disconnect was never delivered.
      */
     val maximumTrip: Duration = Duration.ofHours(12),
 ) {
 
-    fun onSignal(state: DriveState, signal: DriveSignal): DriveTransition = when (signal.kind) {
-        SignalKind.DRIVE_STARTED -> onDriveStarted(state, signal)
-        SignalKind.DRIVE_ENDED -> onDriveEnded(state, signal)
-        SignalKind.WALKING_STARTED -> onWalking(state, signal)
+    fun onSignal(state: DriveState, signal: DriveSignal): DriveTransition {
+        val linked = trackLinks(state, signal)
+        return when (signal.kind) {
+            SignalKind.DRIVE_STARTED -> onDriveStarted(linked, signal)
+            SignalKind.DRIVE_ENDED -> onDriveEnded(linked, signal)
+            SignalKind.WALKING_STARTED -> onWalking(linked, signal)
+        }
     }
+
+    /**
+     * A car link turned out not to be connected, without an edge to say when it went: the process
+     * was dead through the disconnect, and the first thing the head unit reported on waking was
+     * "not connected". Nothing is known about where or when the drive ended, so no pin comes of it;
+     * the link just stops vouching for the car, and the other sources get their say again.
+     */
+    fun onLinkAbsent(state: DriveState, source: SignalSource): DriveTransition =
+        if (source !in state.carLinks) {
+            DriveTransition(state, DriveAction.None)
+        } else {
+            DriveTransition(
+                state.copy(carLinks = state.carLinks - source),
+                DriveAction.Ignore("$source was found disconnected with no edge seen; it no longer vouches for the car"),
+            )
+        }
 
     /**
      * Called when the alarm scheduled by [DriveAction.ScheduleParkCheck] fires. Also safe to call
@@ -125,9 +160,41 @@ class DriveStateMachine(
         )
     }
 
+    /** Keeps [DriveState.carLinks] in step with what the stereo and head unit report, in any phase. */
+    private fun trackLinks(state: DriveState, signal: DriveSignal): DriveState {
+        if (!signal.source.isCarLink) return state
+        return when (signal.kind) {
+            SignalKind.DRIVE_STARTED -> state.copy(carLinks = state.carLinks + (signal.source to signal.at))
+            SignalKind.DRIVE_ENDED -> state.copy(carLinks = state.carLinks - signal.source)
+            SignalKind.WALKING_STARTED -> state
+        }
+    }
+
+    /**
+     * Why a signal saying the drive is over should not be believed, or null if it should.
+     *
+     * Two things overrule it. A car link still connected: a stereo or head unit only stays up while
+     * the car is on and the phone is in it, so activity recognition calling a traffic jam "still" or
+     * a pothole "walking" is simply wrong — and so is one link dropping while another holds. And a
+     * signal dated before the drive began: activity transitions are delivered in batches, and the
+     * walk *to* the car used to arrive after the stereo had connected and discard the drive as too
+     * short, taking everything known about it with it.
+     */
+    private fun overruled(state: DriveState, signal: DriveSignal): String? {
+        val started = state.driveStartedAt
+        if (started != null && signal.at.isBefore(started)) {
+            return "it predates the drive by ${Duration.between(signal.at, started).seconds}s"
+        }
+        val holding = state.carLinks.keys - signal.source
+        if (signal.source != SignalSource.MANUAL && holding.isNotEmpty()) {
+            return "${holding.joinToString()} still connected, so the car is still on"
+        }
+        return null
+    }
+
     private fun onDriveStarted(state: DriveState, signal: DriveSignal): DriveTransition = when (state.phase) {
         DrivePhase.IDLE -> DriveTransition(
-            DriveState(
+            state.copy(
                 phase = DrivePhase.DRIVING,
                 driveStartedAt = signal.at,
                 startedBy = signal.source,
@@ -138,7 +205,7 @@ class DriveStateMachine(
         // The drive never actually ended: a red light, a cable reseated, a stereo that reconnected.
         // Cancel the pending confirmation and carry on with the original start time.
         DrivePhase.CONFIRMING_PARK -> DriveTransition(
-            state.copy(phase = DrivePhase.DRIVING, confirmAt = null, endedBy = null),
+            state.copy(phase = DrivePhase.DRIVING, confirmAt = null, endedBy = null, endedAt = null),
             DriveAction.CancelParkCheck,
         )
 
@@ -156,10 +223,13 @@ class DriveStateMachine(
         DrivePhase.DRIVING -> {
             val started = state.driveStartedAt
             val elapsed = if (started != null) Duration.between(started, signal.at) else Duration.ZERO
+            val overruled = overruled(state, signal)
 
             when {
+                overruled != null -> DriveTransition(state, DriveAction.Ignore(overruled))
+
                 started != null && elapsed < minimumTrip ->
-                    DriveTransition(DriveState(), DriveAction.DiscardShortTrip)
+                    DriveTransition(idle(state), DriveAction.DiscardShortTrip)
 
                 signal.endDebounce.isZero ->
                     park(state, signal.source, signal.at, onFoot = false)
@@ -182,27 +252,33 @@ class DriveStateMachine(
 
     /**
      * Walking beats every debounce. If the user is on foot, the car is not moving, whatever the
-     * stereo thinks — so a pending confirmation fires now and a drive we never saw end is closed out.
+     * detector thought a moment ago — so a pending confirmation fires now and a drive we never saw
+     * end is closed out. The one thing it does not beat is a car link that is still connected.
      */
-    private fun onWalking(state: DriveState, signal: DriveSignal): DriveTransition = when (state.phase) {
-        DrivePhase.IDLE -> DriveTransition(state, DriveAction.None)
+    private fun onWalking(state: DriveState, signal: DriveSignal): DriveTransition {
+        if (state.phase == DrivePhase.IDLE) return DriveTransition(state, DriveAction.None)
+        overruled(state, signal)?.let { return DriveTransition(state, DriveAction.Ignore(it)) }
 
-        DrivePhase.CONFIRMING_PARK ->
-            park(
-                state,
-                state.endedBy ?: signal.source,
-                signal.at,
-                onFoot = true,
-                stoppedAt = state.endedAt ?: signal.at,
-            )
+        return when (state.phase) {
+            DrivePhase.IDLE -> DriveTransition(state, DriveAction.None)
 
-        DrivePhase.DRIVING -> {
-            val started = state.driveStartedAt
-            val elapsed = if (started != null) Duration.between(started, signal.at) else Duration.ZERO
-            if (started != null && elapsed < minimumTrip) {
-                DriveTransition(DriveState(), DriveAction.DiscardShortTrip)
-            } else {
-                park(state, signal.source, signal.at, onFoot = true)
+            DrivePhase.CONFIRMING_PARK ->
+                park(
+                    state,
+                    state.endedBy ?: signal.source,
+                    signal.at,
+                    onFoot = true,
+                    stoppedAt = state.endedAt ?: signal.at,
+                )
+
+            DrivePhase.DRIVING -> {
+                val started = state.driveStartedAt
+                val elapsed = if (started != null) Duration.between(started, signal.at) else Duration.ZERO
+                if (started != null && elapsed < minimumTrip) {
+                    DriveTransition(idle(state), DriveAction.DiscardShortTrip)
+                } else {
+                    park(state, signal.source, signal.at, onFoot = true)
+                }
             }
         }
     }
@@ -222,7 +298,7 @@ class DriveStateMachine(
     ): DriveTransition {
         val droveFor = state.driveStartedAt?.let { Duration.between(it, at) } ?: Duration.ZERO
         return DriveTransition(
-            DriveState(),
+            idle(state),
             DriveAction.CapturePark(
                 endedBy = endedBy,
                 droveFor = droveFor,
@@ -232,16 +308,35 @@ class DriveStateMachine(
         )
     }
 
+    /** Back to idle: the drive is forgotten, but not which car links are still up. */
+    private fun idle(state: DriveState) = DriveState(carLinks = state.carLinks)
+
     /**
      * Housekeeping for a drive that never ended — the phone died, the receiver was dropped, the
      * user got out without their phone. Called on app launch and from the daily maintenance worker.
+     *
+     * Also lets go of a car link that has been "connected" for longer than any drive lasts: its
+     * disconnect was lost, and a link nobody clears would overrule every end signal for good.
      */
     fun onStaleCheck(state: DriveState, now: Instant): DriveTransition {
-        val started = state.driveStartedAt ?: return DriveTransition(state, DriveAction.None)
-        if (state.phase == DrivePhase.IDLE) return DriveTransition(state, DriveAction.None)
-        if (Duration.between(started, now) < maximumTrip) return DriveTransition(state, DriveAction.None)
+        val freshLinks = state.carLinks.filterValues { Duration.between(it, now) < maximumTrip }
+        val started = state.driveStartedAt
+        val driveIsStale = state.phase != DrivePhase.IDLE &&
+            started != null &&
+            Duration.between(started, now) >= maximumTrip
 
-        // No parking pin: we have no idea where the car was left, and a wrong pin is worse than none.
-        return DriveTransition(DriveState(), DriveAction.DiscardShortTrip)
+        return when {
+            // No parking pin: we have no idea where the car was left, and a wrong pin is worse than none.
+            driveIsStale -> DriveTransition(DriveState(carLinks = freshLinks), DriveAction.DiscardShortTrip)
+
+            freshLinks != state.carLinks -> DriveTransition(
+                state.copy(carLinks = freshLinks),
+                DriveAction.Ignore(
+                    "${(state.carLinks.keys - freshLinks.keys).joinToString()} connected too long to believe; dropped",
+                ),
+            )
+
+            else -> DriveTransition(state, DriveAction.None)
+        }
     }
 }

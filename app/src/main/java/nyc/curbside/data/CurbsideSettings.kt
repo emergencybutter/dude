@@ -42,6 +42,9 @@ class CurbsideSettings @Inject constructor(
         val DRIVE_ENDED_BY = stringPreferencesKey("drive_ended_by")
         val DRIVE_ENDED_AT = longPreferencesKey("drive_ended_at")
 
+        /** Car links connected now, as `SOURCE=epochMillis` pairs joined by commas. */
+        val DRIVE_CAR_LINKS = stringPreferencesKey("drive_car_links")
+
         val CAR_BLUETOOTH_ADDRESS = stringPreferencesKey("car_bluetooth_address")
         val CAR_BLUETOOTH_NAME = stringPreferencesKey("car_bluetooth_name")
 
@@ -97,6 +100,12 @@ class CurbsideSettings @Inject constructor(
                 ?: prefs.remove(Keys.DRIVE_ENDED_BY)
             state.endedAt?.let { prefs[Keys.DRIVE_ENDED_AT] = it.toEpochMilli() }
                 ?: prefs.remove(Keys.DRIVE_ENDED_AT)
+            if (state.carLinks.isEmpty()) {
+                prefs.remove(Keys.DRIVE_CAR_LINKS)
+            } else {
+                prefs[Keys.DRIVE_CAR_LINKS] =
+                    state.carLinks.entries.joinToString(",") { (source, since) -> "${source.name}=${since.toEpochMilli()}" }
+            }
         }
     }
 
@@ -108,6 +117,15 @@ class CurbsideSettings @Inject constructor(
         confirmAt = this[Keys.DRIVE_CONFIRM_AT]?.let(Instant::ofEpochMilli),
         endedBy = this[Keys.DRIVE_ENDED_BY]?.let { runCatching { SignalSource.valueOf(it) }.getOrNull() },
         endedAt = this[Keys.DRIVE_ENDED_AT]?.let(Instant::ofEpochMilli),
+        carLinks = this[Keys.DRIVE_CAR_LINKS].orEmpty()
+            .split(',')
+            .mapNotNull { pair ->
+                val (name, millis) = pair.split('=').takeIf { it.size == 2 } ?: return@mapNotNull null
+                val source = runCatching { SignalSource.valueOf(name) }.getOrNull() ?: return@mapNotNull null
+                val since = millis.toLongOrNull()?.let(Instant::ofEpochMilli) ?: return@mapNotNull null
+                source to since
+            }
+            .toMap(),
     )
 
     /** The stereo the user nominated as "my car". Null until they pick one in Settings. */

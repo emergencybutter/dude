@@ -4,6 +4,7 @@ import android.bluetooth.BluetoothDevice
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.SystemClock
 import com.google.android.gms.location.ActivityTransition
 import com.google.android.gms.location.ActivityTransitionResult
 import com.google.android.gms.location.DetectedActivity
@@ -61,6 +62,12 @@ class ActivityTransitionReceiver : CoroutineBroadcastReceiver() {
 
         // A single delivery can carry several transitions; they arrive oldest first and the state
         // machine is order-sensitive, so replay them in order rather than taking only the last.
+        //
+        // Each is dated from when it happened, not when it arrived. Deliveries are batched and can
+        // lag by minutes; stamping them "now" made the walk to the car look like it came after the
+        // stereo connected, and the machine threw the drive away as a ninety-second trip.
+        val nowWall = Instant.now()
+        val nowElapsed = SystemClock.elapsedRealtimeNanos()
         val signals = result.transitionEvents.mapNotNull { event ->
             val kind = when {
                 event.activityType == DetectedActivity.IN_VEHICLE &&
@@ -77,7 +84,8 @@ class ActivityTransitionReceiver : CoroutineBroadcastReceiver() {
 
                 else -> null
             }
-            kind?.let { DriveSignal(SignalSource.ACTIVITY_RECOGNITION, it, Instant.now()) }
+            val age = (nowElapsed - event.elapsedRealTimeNanos).coerceAtLeast(0L)
+            kind?.let { DriveSignal(SignalSource.ACTIVITY_RECOGNITION, it, nowWall.minusNanos(age)) }
         }
 
         if (signals.isEmpty()) {
